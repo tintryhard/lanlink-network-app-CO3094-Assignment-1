@@ -2,7 +2,7 @@
 
 Course project skeleton for Python, TCP/UDP sockets, TLS and PySide6.
 
-**Status:** Project skeleton only; no networking, authentication, GUI or file transfer implemented yet.
+**Status:** Stage 1 TCP HELLO/HELLO_ACK is implemented. The server handles one connection at a time and closes it after the handshake. Existing protocol, file-engine and file-widget components are not integrated into a complete application.
 
 ## Team ownership
 - **A:** `server/`, `common/transport.py`, `common/tls.py`; architecture and network tests.
@@ -37,14 +37,31 @@ Install dependencies:
 python -m pip install -r requirements-dev.txt
 ```
 
-## Smoke test
+## Stage 1: TCP handshake
 
 ```bash
-python -m server
-python -m client
+# Terminal 1
+python -m server --host 127.0.0.1 --port 5000
+# Terminal 2
+python -m client --host 127.0.0.1 --port 5000
 ```
 
-Each command currently prints a skeleton-only message.
+The client prints `HELLO_ACK from LanLink; handshake complete` and exits.
+The server stays available for the next sequential connection; stop it with Ctrl+C.
+Both commands accept `--timeout` (default 5 seconds) for socket operations.
+
+Run the focused localhost integration tests and existing protocol regressions:
+
+```bash
+python -m pytest -q tests/integration/test_handshake.py tests/protocol
+```
+
+`common/transport.py` delegates framing and validation to `common.protocol`.
+`common/handshake.py` checks message order and correlates HELLO_ACK to HELLO.
+Sockets are closed on completion, EOF, malformed input, timeout or disconnect.
+There is no authentication, concurrent connection processing, chat, network file
+transfer, TLS or Qt integration in this stage. This plaintext handshake sends
+only application identification and protocol limits.
 
 ## Workflow
 1. Agree `docs/protocol.md` and module interfaces first.
