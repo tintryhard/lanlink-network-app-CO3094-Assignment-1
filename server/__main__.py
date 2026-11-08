@@ -1,9 +1,10 @@
-"""Sequential, handshake-only TCP server."""
+"""Concurrent, handshake-only TCP server."""
 import argparse
+import math
 import socket
 import sys
 
-from common.errors import ProtocolError
+from server.app import TCPServer
 from common.handshake import accept_hello
 from common.protocol import Direction
 from common.transport import SocketTransport
@@ -20,29 +21,26 @@ def main(argv=None):
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=5000)
     parser.add_argument('--timeout', type=float, default=5.0)
+    parser.add_argument('--max-clients', type=int, default=64)
+    parser.add_argument('--idle-timeout', type=float, default=45.0)
     args = parser.parse_args(argv)
-    if args.timeout <= 0:
-        parser.error('--timeout must be positive')
+    if (not math.isfinite(args.timeout) or args.timeout <= 0 or
+            not math.isfinite(args.idle_timeout) or args.idle_timeout <= 0 or args.max_clients < 1):
+        parser.error("timeouts must be positive and finite; max-clients must be positive")
+    server = None
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            listener.bind((args.host, args.port))
-            listener.listen(1)
-            print(f'Listening on {listener.getsockname()}', flush=True)
-            while True:
-                connection, address = listener.accept()
-                try:
-                    with connection:
-                        connection.settimeout(args.timeout)
-                        hello = handle_connection(connection)
-                    print(f'HELLO from {hello.header["client_name"]} at {address}', flush=True)
-                except (OSError, EOFError, ProtocolError) as error:
-                    print(f'Handshake failed for {address}: {error}', file=sys.stderr, flush=True)
+        server = TCPServer(args.host, args.port, max_clients=args.max_clients,
+                           handshake_timeout=args.timeout, idle_timeout=args.idle_timeout)
+        print(f'Listening on {server.address}', flush=True)
+        server.serve_forever()
     except KeyboardInterrupt:
         return 0
     except OSError as error:
         print(f'Server error: {error}', file=sys.stderr)
         return 1
+    finally:
+        if server is not None:
+            server.shutdown()
 
 
 if __name__ == '__main__':

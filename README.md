@@ -2,7 +2,9 @@
 
 Course project skeleton for Python, TCP/UDP sockets, TLS and PySide6.
 
-**Status:** Stage 1 TCP HELLO/HELLO_ACK is implemented. The server handles one connection at a time and closes it after the handshake. Existing protocol, file-engine and file-widget components are not integrated into a complete application.
+**Status:** Stage 2 supports concurrent TCP HELLO/HELLO_ACK connections with
+bounded thread-per-client workers. Existing protocol, file-engine and file-widget
+components are not integrated into a complete application.
 
 ## Team ownership
 - **A:** `server/`, `common/transport.py`, `common/tls.py`; architecture and network tests.
@@ -37,30 +39,41 @@ Install dependencies:
 python -m pip install -r requirements-dev.txt
 ```
 
-## Stage 1: TCP handshake
+## Stage 2: Concurrent TCP handshake
 
 ```bash
 # Terminal 1
-python -m server --host 127.0.0.1 --port 5000
+python -m server --host 127.0.0.1 --port 5000 --max-clients 64 --timeout 5 --idle-timeout 45
 # Terminal 2
 python -m client --host 127.0.0.1 --port 5000
 ```
 
 The client prints `HELLO_ACK from LanLink; handshake complete` and exits.
-The server stays available for the next sequential connection; stop it with Ctrl+C.
-Both commands accept `--timeout` (default 5 seconds) for socket operations.
+The server accepts clients independently and retains successful connections until
+EOF, unsupported input, or idle timeout. The CLI client exits after HELLO_ACK, so
+its connection is then removed. Stop the server with Ctrl+C to interrupt socket
+I/O and join workers.
+
+The default cap is 64 accepted clients; excess connections are closed immediately.
+Each client owns a socket, decoder, and non-daemon worker. A lock protects the
+connection ID/socket/worker/state registry; a per-transport lock serializes writes.
+`--timeout` sets the server's absolute HELLO read deadline (5 seconds), including
+partial reads. The ACK write also has a finite socket timeout. `--idle-timeout`
+sets the post-handshake socket inactivity timeout (45 seconds). The client uses
+`--timeout` as its socket-operation timeout.
 
 Run the focused localhost integration tests and existing protocol regressions:
 
 ```bash
-python -m pytest -q tests/integration/test_handshake.py tests/protocol
+python -m pytest -q tests/integration tests/protocol
 ```
 
 `common/transport.py` delegates framing and validation to `common.protocol`.
 `common/handshake.py` checks message order and correlates HELLO_ACK to HELLO.
-Sockets are closed on completion, EOF, malformed input, timeout or disconnect.
-There is no authentication, concurrent connection processing, chat, network file
-transfer, TLS or Qt integration in this stage. This plaintext handshake sends
+Sockets are closed on EOF, malformed input, timeout, disconnect or server shutdown.
+There is no authentication, chat, network file transfer, TLS, UDP discovery or
+Qt integration in this stage. Messages after HELLO are rejected by closing the
+connection. This plaintext handshake sends
 only application identification and protocol limits.
 
 ## Workflow
