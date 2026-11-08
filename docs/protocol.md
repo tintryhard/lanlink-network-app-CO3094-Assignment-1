@@ -206,9 +206,9 @@ ProtocolError and TransferError expose `.code` and `.message`. The Vietnamese te
 | INVALID_FIELD | Field type/range/schema/direction is invalid | codec; engines propagate validated input errors | connection close; best-effort ERROR by A transport (planned); engine failure FILE_RESULT / FILE_CANCEL | Trường dữ liệu không hợp lệ. |
 | SPOOFED_FIELD | Client supplied server-owned identity fields | codec; engines propagate validated input errors | connection close; best-effort ERROR by A transport (planned); engine failure FILE_RESULT / FILE_CANCEL | Thông tin người gửi không hợp lệ. |
 | BAD_PAYLOAD | Empty/invalid UTF-8 or malformed user-list payload | codec; engines propagate validated input errors | connection close; best-effort ERROR by A transport (planned); engine failure FILE_RESULT / FILE_CANCEL | Nội dung dữ liệu không hợp lệ. |
-| NOT_AUTHENTICATED | Operation requires an authenticated session | A router/session (required; NOT IMPLEMENTED) | ERROR (planned) | Bạn cần đăng nhập trước. |
-| AUTH_FAILED | Credentials could not be verified | A router/session (required; NOT IMPLEMENTED) | ERROR (planned) | Tên đăng nhập hoặc mật khẩu không đúng. |
-| ALREADY_LOGGED_IN | Account already has an active session | A router/session (required; NOT IMPLEMENTED) | ERROR (planned) | Tài khoản đang đăng nhập ở nơi khác. |
+| NOT_AUTHENTICATED | Operation requires an authenticated session | A Stage 3 authentication/session | ERROR | Bạn cần đăng nhập trước. |
+| AUTH_FAILED | Credentials could not be verified | A Stage 3 authentication/session | ERROR | Tên đăng nhập hoặc mật khẩu không đúng. |
+| ALREADY_LOGGED_IN | Account already has an active session | A Stage 3 authentication/session | ERROR | Tài khoản đang đăng nhập ở nơi khác. |
 | RECIPIENT_OFFLINE | Known recipient has no active session | A router/session (required; NOT IMPLEMENTED) | ERROR (planned) | Người nhận đang ngoại tuyến. |
 | RECIPIENT_UNKNOWN | Recipient account does not exist | A router/session (required; NOT IMPLEMENTED) | ERROR (planned) | Không tìm thấy người nhận. |
 | QUEUE_FULL | Bounded connection output queue cannot accept work | A router/session (required; NOT IMPLEMENTED) | ERROR (planned) | Hàng đợi đã đầy. Vui lòng thử lại. |
@@ -285,8 +285,9 @@ sequenceDiagram
     C->>S: TCP and verified TLS
     C->>S: HELLO
     S->>C: HELLO_ACK (limits)
-    C->>S: AUTH (never logged)
+    C->>S: AUTH (never logged; localhost-only until TLS)
     S->>C: AUTH_OK
+    C->>S: USER_LIST request
     S->>C: USER_LIST
 ```
 
@@ -662,3 +663,20 @@ malformed/poisoned streams close after optional best-effort ERROR, while ordinar
 router errors use ERROR and preserve a valid stream. Engine TIMEOUT sends belong
 to the service, not an observer. UDP remains discovery-only; whether broadcast
 discovery is mandatory for the rubric is a course/team decision.
+
+
+## Stage 3 runtime scope
+
+The current server runs HELLO -> AUTH -> authenticated USER_LIST/LOGOUT over
+localhost TCP. It uses the existing AUTH/AUTH_OK/ERROR/USER_LIST/LOGOUT schemas.
+TLS in the earlier design diagrams remains planned. Credentials are loaded by
+`server.auth` from version 1 salted PBKDF2 records; the runtime enforces a loopback
+bind when credentials are configured. There is no chat/file/discovery dispatch.
+
+AUTH_FAILED covers wrong passwords and unknown usernames. ALREADY_LOGGED_IN
+covers both duplicate active names and AUTH on an already authenticated socket.
+Errors after HELLO reference the rejected request. Three failed credential checks
+close the socket. USER_LIST and LOGOUT require authentication; USER_LIST is
+request/response only. A LOGOUT closes the session without a separate ACK.
+Connection state is HELLO_ACCEPTED until AUTH_OK, then AUTHENTICATED until close.
+EOF, resets, malformed input, request deadlines and shutdown remove the user.

@@ -2,9 +2,10 @@
 
 Course project skeleton for Python, TCP/UDP sockets, TLS and PySide6.
 
-**Status:** Stage 2 supports concurrent TCP HELLO/HELLO_ACK connections with
-bounded thread-per-client workers. Existing protocol, file-engine and file-widget
-components are not integrated into a complete application.
+**Status:** Stage 3 supports concurrent TCP handshakes, local password
+verification, authenticated user lists and logout. The server retains the bounded
+thread-per-client architecture. Existing file-engine and file-widget components
+are not integrated into a complete application.
 
 ## Team ownership
 - **A:** `server/`, `common/transport.py`, `common/tls.py`; architecture and network tests.
@@ -39,42 +40,88 @@ Install dependencies:
 python -m pip install -r requirements-dev.txt
 ```
 
-## Stage 2: Concurrent TCP handshake
+## Stage 3: Local authentication and user management
+
+Create accounts interactively (password input is hidden):
+
+```bash
+python -m server.auth --file data/users.json --username alice
+python -m server.auth --file data/users.json --username bob
+```
+
+The command creates or updates one account, retaining the others. The version 1
+JSON file contains a separate random 16-byte salt and PBKDF2-HMAC-SHA256 digest
+(600,000 iterations) for each password. It contains no plaintext passwords.
+Use the command offline, one instance at a time; restart the server after edits.
+`data/` is already ignored by Git. No accounts or default passwords are bundled.
 
 ```bash
 # Terminal 1
-python -m server --host 127.0.0.1 --port 5000 --max-clients 64 --timeout 5 --idle-timeout 45
-# Terminal 2
-python -m client --host 127.0.0.1 --port 5000
+python -m server --host 127.0.0.1 --port 5000 --users data/users.json --max-clients 64 --timeout 5 --idle-timeout 45
+# Terminal 2 (prompts for the password)
+python -m client --host 127.0.0.1 --port 5000 --username alice
+# Terminal 3
+python -m client --host 127.0.0.1 --port 5000 --username bob
 ```
 
-The client prints `HELLO_ACK from LanLink; handshake complete` and exits.
-The server accepts clients independently and retains successful connections until
-EOF, unsupported input, or idle timeout. The CLI client exits after HELLO_ACK, so
-its connection is then removed. Stop the server with Ctrl+C to interrupt socket
-I/O and join workers.
+The client logs in, prints the current user list, and remains connected. Press
+Enter to refresh the list or type `logout` to terminate the session. Refresh
+Alice's list after Bob logs in to see both users. EOF on terminal input logs out.
+User lists are requested, not broadcast. They contain authenticated users only,
+including the requester, with username, online=true, peer IP and peer TCP port.
 
-The default cap is 64 accepted clients; excess connections are closed immediately.
-Each client owns a socket, decoder, and non-daemon worker. A lock protects the
-connection ID/socket/worker/state registry; a per-transport lock serializes writes.
-`--timeout` sets the server's absolute HELLO read deadline (5 seconds), including
-partial reads. The ACK write also has a finite socket timeout. `--idle-timeout`
-sets the post-handshake socket inactivity timeout (45 seconds). The client uses
-`--timeout` as its socket-operation timeout.
+**Passwords travel in plaintext TCP in this stage.** This is a localhost demo,
+not secure deployment authentication. Configuring credentials requires a loopback
+server bind; the login CLI also checks the connected peer is loopback before
+prompting for or sending a password. TLS is not implemented.
 
-Run the focused localhost integration tests and existing protocol regressions:
+Omit `--username` to run the original handshake-only client. Starting the server
+without `--users` preserves handshake functionality but rejects every AUTH.
+
+### Connection and session lifecycle
+
+- Every accepted connection owns its socket, decoder, worker and transport write
+  lock. A server lock protects connection and authenticated-user registries.
+- HELLO is required first. The absolute HELLO read deadline is `--timeout`
+  (default 5 seconds). After HELLO, each request must finish within
+  `--idle-timeout` (default 45 seconds), including a request sent in fragments.
+- AUTH checks the username/password against immutable loaded hashes. Password
+  hashing and socket I/O happen outside the registry lock. Duplicate username
+  check-and-insert is atomic; one active session per exact, case-sensitive name.
+- AUTH_OK confirms login and the connection state becomes AUTHENTICATED. The
+  registry stores username, connection ID, IP, port and online state. Connection
+  IDs and credentials are not included in USER_LIST responses.
+- Invalid credentials return ERROR(AUTH_FAILED), without distinguishing unknown
+  names from wrong passwords. Three credential failures close that connection;
+  failed attempts can otherwise be retried on the same connection.
+- Duplicate active names and repeated AUTH return ERROR(ALREADY_LOGGED_IN).
+  Repeated AUTH preserves the original session. USER_LIST/LOGOUT before AUTH
+  return ERROR(NOT_AUTHENTICATED); unsupported operations are rejected and closed.
+  Errors after HELLO reference the rejected request ID. AUTH before HELLO gets
+  ERROR(INVALID_FIELD) followed by close; corrupt frames are closed directly.
+- Authenticated USER_LIST requests return a locked snapshot. LOGOUT terminates
+  the connection with EOF (there is no separate logout-ACK message type).
+- EOF, malformed frames, reset, request timeout and shutdown close sockets and
+  remove both connection and user records. Ctrl+C stops admissions, interrupts
+  socket I/O and joins workers. No credential hashing occurs under the lock.
+
+The default connection cap is 64; excess connections are closed. There is no
+cross-connection rate limiter, account registration API, persistence of online
+state, chat routing, file transfer, UDP discovery or Qt integration in Stage 3.
+
+### Tests
 
 ```bash
-python -m pytest -q tests/integration tests/protocol
+# Stage 3 local authentication and CLI tests
+python -m pytest -q tests/integration/test_auth.py
+# Stage 1/2/3 and existing non-Qt regressions
+python -m pytest -q tests/integration tests/protocol tests/transfer tests/scripts
 ```
 
-`common/transport.py` delegates framing and validation to `common.protocol`.
-`common/handshake.py` checks message order and correlates HELLO_ACK to HELLO.
-Sockets are closed on EOF, malformed input, timeout, disconnect or server shutdown.
-There is no authentication, chat, network file transfer, TLS, UDP discovery or
-Qt integration in this stage. Messages after HELLO are rejected by closing the
-connection. This plaintext handshake sends
-only application identification and protocol limits.
+The integration tests use real localhost sockets and generated passwords/hash
+files in temporary directories. They cover 20 simultaneous authenticated users,
+duplicate races, user-list metadata, unauthorized sequences, logout, disconnect,
+timeout and shutdown cleanup. Existing Stage 1/2 tests remain in place.
 
 ## Workflow
 1. Agree `docs/protocol.md` and module interfaces first.

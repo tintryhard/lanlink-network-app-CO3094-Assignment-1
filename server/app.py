@@ -1,15 +1,16 @@
-"""Bounded thread-per-client TCP server; only HELLO/HELLO_ACK is supported."""
-from dataclasses import dataclass, replace
+"""Bounded thread-per-client TCP server; HELLO, authentication and user management."""
+from dataclasses import asdict, dataclass, replace
+import ipaddress
 import math
 import socket
 import threading
 import time
 from uuid import uuid4
 
-from common.errors import ErrorCode, ProtocolError
+from common.errors import ErrorCode, ProtocolError, user_message
 from common.handshake import accept_hello
-from common.models import ConnectionState
-from common.protocol import Direction
+from common.models import ConnectionState, MessageType, UserInfo
+from common.protocol import Direction, build_auth_ok, build_error, build_user_list
 from common.transport import SocketTransport
 
 
@@ -21,14 +22,27 @@ class Connection:
     state: ConnectionState = ConnectionState.CONNECTING
 
 
+@dataclass(frozen=True)
+class UserSession:
+    username: str
+    connection_id: str
+    ip: str
+    port: int
+    online: bool = True
+
+
 class TCPServer:
     def __init__(self, host='127.0.0.1', port=5000, *, max_clients=64,
-                 handshake_timeout=5.0, idle_timeout=45.0):
+                 handshake_timeout=5.0, idle_timeout=45.0, credentials=None):
         if type(max_clients) is not int or max_clients < 1:
             raise ValueError('max_clients must be a positive integer')
         if any(not math.isfinite(value) or value <= 0
                for value in (handshake_timeout, idle_timeout)):
             raise ValueError('timeouts must be positive and finite')
+        if credentials is not None and not ipaddress.ip_address(socket.gethostbyname(host)).is_loopback:
+            raise ValueError('Password authentication requires a loopback bind until TLS is implemented')
+        self.credentials = credentials
+        self._users = {}
         self.handshake_timeout = handshake_timeout
         self.idle_timeout = idle_timeout
         self.max_clients = max_clients
@@ -50,6 +64,11 @@ class TCPServer:
         """Return copies of records under the registry lock."""
         with self._lock:
             return {key: replace(value) for key, value in self._connections.items()}
+
+    def users(self):
+        """Snapshot of authenticated sessions; credential data is never included."""
+        with self._lock:
+            return dict(self._users)
 
     def serve_forever(self):
         try:
@@ -85,23 +104,82 @@ class TCPServer:
                 transport = SocketTransport(connection, direction=Direction.CLIENT_TO_SERVER)
                 transport.read_deadline = time.monotonic() + self.handshake_timeout
                 connection.settimeout(self.handshake_timeout)
-                accept_hello(transport)
+                try:
+                    accept_hello(transport)
+                except ProtocolError:
+                    # A valid message in the wrong phase can receive an ERROR.
+                    # Corrupt framing is closed without trying to resynchronise.
+                    if transport.decoder.at_clean_boundary():
+                        transport.send(build_error(ErrorCode.INVALID_FIELD, 'Expected HELLO before authentication'))
+                    raise
                 with self._lock:
                     if not self._stopping.is_set():
                         self._connections[key].state = ConnectionState.HELLO_ACCEPTED
                 transport.read_deadline = None
                 connection.settimeout(self.idle_timeout)
-                # Keep the connection alive, but no later-stage messages are supported.
-                if transport.receive() is not None:
-                    raise ProtocolError(ErrorCode.INVALID_FIELD, 'Only HELLO is supported')
+                self._session_loop(key, connection, transport)
         except (OSError, EOFError, ProtocolError):
             # A peer failure affects only this connection.
             pass
         finally:
             with self._lock:
+                for username, session in list(self._users.items()):
+                    if session.connection_id == key:
+                        del self._users[username]
                 record = self._connections.pop(key, None)
                 if record is not None:
                     record.state = ConnectionState.CLOSED
+
+    def _session_loop(self, key, connection, transport):
+        username = None
+        failures = 0
+        while not self._stopping.is_set():
+            # Bound a whole request, even if a peer sends bytes slowly.
+            transport.read_deadline = time.monotonic() + self.idle_timeout
+            message = transport.receive()
+            connection.settimeout(self.idle_timeout)
+            if message is None:
+                return
+            code = None
+            if message.type == MessageType.AUTH:
+                if username is not None:
+                    code = ErrorCode.ALREADY_LOGGED_IN
+                elif (self.credentials is None or
+                      not self.credentials.verify(message.header['username'], message.payload)):
+                    code = ErrorCode.AUTH_FAILED
+                    failures += 1
+                else:
+                    candidate = message.header['username']
+                    ip, port = connection.getpeername()
+                    # Check-and-insert must be one atomic operation. No I/O/hash under lock.
+                    with self._lock:
+                        if self._stopping.is_set():
+                            return
+                        if candidate in self._users:
+                            code = ErrorCode.ALREADY_LOGGED_IN
+                        else:
+                            self._users[candidate] = UserSession(candidate, key, ip, port)
+                            self._connections[key].state = ConnectionState.AUTHENTICATED
+                            username = candidate
+                    if code is None:
+                        transport.send(build_auth_ok(message.header['request_id'], username))
+                        continue
+            elif username is None:
+                code = ErrorCode.NOT_AUTHENTICATED
+            elif message.type == MessageType.USER_LIST:
+                with self._lock:
+                    users = [asdict(UserInfo(s.username, s.online, s.ip, s.port))
+                             for s in sorted(self._users.values(), key=lambda s: s.username)]
+                transport.send(build_user_list(users))
+                continue
+            elif message.type == MessageType.LOGOUT:
+                return
+            else:
+                code = ErrorCode.INVALID_FIELD
+            transport.send(build_error(code, user_message(code),
+                                       ref_request_id=message.header['request_id']))
+            if failures >= 3 or message.type not in {MessageType.AUTH, MessageType.USER_LIST, MessageType.LOGOUT}:
+                return
 
     def shutdown(self):
         """Stop admissions, interrupt blocked I/O and join all registered workers."""
