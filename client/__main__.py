@@ -6,30 +6,31 @@ import json
 import math
 import socket
 import sys
+from typing import Any
 
 from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.handshake import initiate_hello
-from common.models import MessageType
+from common.models import Message, MessageType
 from common.protocol import Direction, build_auth, build_logout, build_user_list
 from common.transport import SocketTransport
 from client.private_chat import PrivateChatClient
 
 
-def _connect_local(host, port, timeout):
+def _connect_local(host: str, port: int, timeout: float) -> socket.socket:
     address = socket.gethostbyname(host)
     if not ipaddress.ip_address(address).is_loopback:
         raise ValueError('TCP client is restricted to localhost until TLS is implemented')
     return socket.create_connection((address, port), timeout=timeout)
 
 
-def connect_hello(host: str, port: int, *, timeout: float = 5.0):
+def connect_hello(host: str, port: int, *, timeout: float = 5.0) -> Message:
     with _connect_local(host, port, timeout) as connection:
         if not ipaddress.ip_address(connection.getpeername()[0]).is_loopback:
             raise ValueError('TCP client is restricted to localhost until TLS is implemented')
         return initiate_hello(SocketTransport(connection, direction=Direction.SERVER_TO_CLIENT))
 
 
-def authenticate(transport: SocketTransport, username: str, password: str):
+def authenticate(transport: SocketTransport, username: str, password: str) -> Message:
     request = build_auth(username, password)
     transport.send(request)
     reply = transport.receive()
@@ -44,7 +45,7 @@ def authenticate(transport: SocketTransport, username: str, password: str):
     return reply
 
 
-def request_users(transport):
+def request_users(transport: SocketTransport) -> list[dict[str, Any]]:
     request = build_user_list()
     transport.send(request)
     reply = transport.receive()
@@ -59,7 +60,7 @@ def request_users(transport):
     return json.loads(reply.payload)['users']
 
 
-def login_cli(host, port, username, timeout):
+def login_cli(host: str, port: int, username: str, timeout: float) -> None:
     with _connect_local(host, port, timeout) as connection:
         if not ipaddress.ip_address(connection.getpeername()[0]).is_loopback:
             raise ValueError('Password login is restricted to localhost until TLS is implemented')
@@ -67,7 +68,7 @@ def login_cli(host, port, username, timeout):
         initiate_hello(transport)
         authenticate(transport, username, getpass.getpass('Password: '))
         print(f'Authenticated as {username}')
-        def display(message):
+        def display(message: Message) -> None:
             print(f'\n[{message.header["sender"]} -> {username}] '
                   f'{message.payload.decode("utf-8")}', flush=True)
 
@@ -104,7 +105,7 @@ def login_cli(host, port, username, timeout):
             client.close()
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=5000)

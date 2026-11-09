@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import secrets
 import tempfile
+from typing import Mapping
 
 from common.errors import ProtocolError
 from common.protocol import build_auth
@@ -16,13 +17,13 @@ ITERATIONS = 600_000
 
 
 class CredentialStore:
-    def __init__(self, users):
+    def __init__(self, users: Mapping[str, tuple[bytes, bytes]]) -> None:
         # Copy the records so verification can run concurrently without mutation.
         self._users = dict(users)
         self._dummy = (secrets.token_bytes(16), secrets.token_bytes(32))
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path: str | Path) -> 'CredentialStore':
         try:
             obj = json.loads(Path(path).read_text(encoding='utf-8'))
             if (not isinstance(obj, dict) or set(obj) != {'version', 'users'} or
@@ -50,7 +51,7 @@ class CredentialStore:
         return matches and username in self._users
 
 
-def save_user(path, username: str, password: str):
+def save_user(path: str | Path, username: str, password: str) -> None:
     """Create/update a local account using an atomic file replacement."""
     build_auth(username, password)
     path = Path(path)
@@ -72,7 +73,7 @@ def save_user(path, username: str, password: str):
             os.unlink(temporary)
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--file', default='data/users.json')
     parser.add_argument('--username', required=True)

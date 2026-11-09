@@ -8,12 +8,12 @@ import threading
 import time
 
 from common.models import Message
-from common.protocol import DEFAULT_LIMITS, Direction, FrameDecoder, encode_message
+from common.protocol import DEFAULT_LIMITS, Direction, FrameDecoder, ProtocolLimits, encode_message
 
 
 class SocketTransport:
     def __init__(self, connection: socket.socket, *, direction: Direction,
-                 limits=DEFAULT_LIMITS):
+                 limits: ProtocolLimits = DEFAULT_LIMITS) -> None:
         self.connection = connection
         self.limits = limits
         self.decoder = FrameDecoder(limits, direction)

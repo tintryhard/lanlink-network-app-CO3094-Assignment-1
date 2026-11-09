@@ -86,7 +86,7 @@ def user_message(code: ErrorCode) -> str:
 
 class LanLinkError(Exception):
     """Business failure with a stable code and a password-free message."""
-    def __init__(self, code: ErrorCode, message: str | None = None):
+    def __init__(self, code: ErrorCode, message: str | None = None) -> None:
         self.code = ErrorCode(code)
         self.message = message or user_message(self.code)
         super().__init__(self.message)

@@ -51,12 +51,12 @@ class ProtocolLimits:
         if self.idle_timeout_s <= self.heartbeat_interval_s:
             raise ProtocolError(ErrorCode.INVALID_FIELD, "idle_timeout_s must exceed heartbeat_interval_s")
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, int]:
         """Advertise application limits in HELLO_ACK."""
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, values: dict) -> "ProtocolLimits":
+    def from_dict(cls, values: Mapping[str, int]) -> "ProtocolLimits":
         """Parse exactly the published, positive bounded integer fields."""
         if not isinstance(values, Mapping):
             raise ProtocolError(ErrorCode.INVALID_FIELD, "limits must be an object")
@@ -139,7 +139,7 @@ def _username(value: Any, name: str) -> None:
         raise ProtocolError(ErrorCode.INVALID_FIELD, f"{name} contains whitespace")
 
 
-def _pairs(pairs: list) -> dict:
+def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result = {}
     for key, value in pairs:
         if key in result:
@@ -174,7 +174,7 @@ def _json(data: bytes) -> Any:
         raise ProtocolError(ErrorCode.BAD_JSON, "Invalid JSON or Unicode") from None
 
 
-def _effective_direction(kind: MessageType, h: dict, direction: Direction) -> Direction:
+def _effective_direction(kind: MessageType, h: dict[str, Any], direction: Direction) -> Direction:
     if direction == Direction.ANY:
         if kind == MessageType.DISCOVER:
             return Direction.UDP_REQUEST
@@ -186,7 +186,7 @@ def _effective_direction(kind: MessageType, h: dict, direction: Direction) -> Di
     return direction
 
 
-def _validate_header(h: dict, limits: ProtocolLimits, direction: Direction) -> MessageType:
+def _validate_header(h: dict[str, Any], limits: ProtocolLimits, direction: Direction) -> MessageType:
     if not isinstance(h, dict):
         raise ProtocolError(ErrorCode.BAD_JSON, "Header must be an object")
     if direction == Direction.CLIENT_TO_SERVER and SERVER_FIELDS.intersection(h):
@@ -292,7 +292,7 @@ def _validate_header(h: dict, limits: ProtocolLimits, direction: Direction) -> M
     return kind
 
 
-def encode_message(msg: Message, limits=DEFAULT_LIMITS) -> bytes:
+def encode_message(msg: Message, limits: ProtocolLimits = DEFAULT_LIMITS) -> bytes:
     """Encode canonical JSON preceded by uint32 BE length; validate payload."""
     h = _plain(msg.header)
     if not isinstance(h, dict) or not isinstance(msg.payload, bytes):
@@ -312,7 +312,7 @@ def encode_message(msg: Message, limits=DEFAULT_LIMITS) -> bytes:
     return frame
 
 
-def decode_header(data: bytes, limits=DEFAULT_LIMITS, direction=Direction.ANY) -> dict:
+def decode_header(data: bytes, limits: ProtocolLimits = DEFAULT_LIMITS, direction: Direction = Direction.ANY) -> dict[str, Any]:
     """Validate the header including per-type length before payload allocation."""
     if not isinstance(data, bytes):
         raise ProtocolError(ErrorCode.BAD_FRAME)
@@ -322,8 +322,8 @@ def decode_header(data: bytes, limits=DEFAULT_LIMITS, direction=Direction.ANY) -
     return h
 
 
-def validate_message(header: dict, payload: bytes, limits=DEFAULT_LIMITS,
-                     direction=Direction.ANY) -> Message:
+def validate_message(header: Mapping[str, Any], payload: bytes, limits: ProtocolLimits = DEFAULT_LIMITS,
+                     direction: Direction = Direction.ANY) -> Message:
     """Validate length, strict UTF-8 and payload semantics without I/O."""
     h = _plain(header)
     kind = _validate_header(h, limits, direction)
@@ -341,7 +341,7 @@ def validate_message(header: dict, payload: bytes, limits=DEFAULT_LIMITS,
     return Message(h, payload)
 
 
-def check_frame_prefix(header_len: int, limits=DEFAULT_LIMITS) -> None:
+def check_frame_prefix(header_len: int, limits: ProtocolLimits = DEFAULT_LIMITS) -> None:
     """Reject zero/oversize header lengths before consuming header bytes."""
     if type(header_len) is not int or header_len <= 0:
         raise ProtocolError(ErrorCode.BAD_FRAME)
@@ -349,7 +349,7 @@ def check_frame_prefix(header_len: int, limits=DEFAULT_LIMITS) -> None:
         raise ProtocolError(ErrorCode.HEADER_TOO_LARGE)
 
 
-def max_payload_for(msg_type: MessageType, limits=DEFAULT_LIMITS) -> int:
+def max_payload_for(msg_type: MessageType, limits: ProtocolLimits = DEFAULT_LIMITS) -> int:
     """Return per-message application payload ceiling."""
     return {MessageType.AUTH: 256, MessageType.CHAT_PUBLIC: limits.max_chat_bytes,
             MessageType.CHAT_PRIVATE: limits.max_chat_bytes, MessageType.FILE_CHUNK: limits.max_chunk_bytes,
@@ -380,7 +380,7 @@ def _validate_users(payload: bytes) -> None:
 
 class FrameDecoder:
     """Incremental socket-free decoder, permanently poisoned on corruption."""
-    def __init__(self, limits=DEFAULT_LIMITS, direction=Direction.ANY):
+    def __init__(self, limits: ProtocolLimits = DEFAULT_LIMITS, direction: Direction = Direction.ANY) -> None:
         self.limits = limits
         self.direction = direction
         self._buffer = bytearray()
@@ -435,8 +435,8 @@ class FrameDecoder:
             raise self._error
 
 
-def decode_datagram(data: bytes, limits=DEFAULT_LIMITS,
-                    direction=Direction.UDP_REQUEST) -> Message:
+def decode_datagram(data: bytes, limits: ProtocolLimits = DEFAULT_LIMITS,
+                    direction: Direction = Direction.UDP_REQUEST) -> Message:
     """Exactly one discovery frame, no trailing bytes or TCP message types."""
     if len(data) > limits.max_datagram_bytes:
         raise ProtocolError(ErrorCode.PAYLOAD_TOO_LARGE)
@@ -454,7 +454,7 @@ def decode_datagram(data: bytes, limits=DEFAULT_LIMITS,
     return validate_message(h, data[4+n:], limits, direction)
 
 
-def build_message(kind: MessageType, payload: bytes = b"", *, limits=DEFAULT_LIMITS, **fields: Any) -> Message:
+def build_message(kind: MessageType, payload: bytes = b"", *, limits: ProtocolLimits = DEFAULT_LIMITS, **fields: Any) -> Message:
     """General builder for all catalogue types, including server-stamped messages."""
     h = {"version": PROTOCOL_VERSION, "type": kind.value, "request_id": uuid4().hex,
          "payload_length": len(payload), **fields}
@@ -472,7 +472,7 @@ def build_hello(client_name: str = "LanLink", client_version: str = "1.0") -> Me
     return build_message(MessageType.HELLO, client_name=client_name, client_version=client_version)
 
 
-def build_hello_ack(ref_request_id: str, server_name: str, limits=DEFAULT_LIMITS) -> Message:
+def build_hello_ack(ref_request_id: str, server_name: str, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
     return validate_message({"version": 1, "type": "HELLO_ACK", "request_id": uuid4().hex,
                              "payload_length": 0, "ref_request_id": ref_request_id,
                              "server_name": server_name, "limits": limits.to_dict()}, b"", limits)
@@ -486,16 +486,16 @@ def build_auth_ok(ref_request_id: str, username: str) -> Message:
     return build_message(MessageType.AUTH_OK, ref_request_id=ref_request_id, username=username)
 
 
-def build_chat_public(text: str, *, limits=DEFAULT_LIMITS) -> Message:
+def build_chat_public(text: str, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
     return build_message(MessageType.CHAT_PUBLIC, _text_bytes(text), limits=limits)
 
 
-def build_chat_private(recipient: str, text: str, *, limits=DEFAULT_LIMITS) -> Message:
+def build_chat_private(recipient: str, text: str, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
     return build_message(MessageType.CHAT_PRIVATE, _text_bytes(text), recipient=recipient, limits=limits)
 
 
 def build_file_offer(transfer_id: str, recipient: str, filename: str, size: int,
-                     sha256: str, chunk_size: int, *, limits=DEFAULT_LIMITS) -> Message:
+                     sha256: str, chunk_size: int, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
     return build_message(MessageType.FILE_OFFER, transfer_id=transfer_id, recipient=recipient,
                          filename=filename, size=size, sha256=sha256, chunk_size=chunk_size, limits=limits)
 
@@ -508,17 +508,17 @@ def build_file_reject(transfer_id: str, reason: str | None = None) -> Message:
     return build_message(MessageType.FILE_REJECT, transfer_id=transfer_id, **({"reason": reason} if reason else {}))
 
 
-def build_file_chunk(transfer_id: str, seq: int, data: bytes, *, limits=DEFAULT_LIMITS) -> Message:
+def build_file_chunk(transfer_id: str, seq: int, data: bytes, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
     return build_message(MessageType.FILE_CHUNK, data, transfer_id=transfer_id, seq=seq, limits=limits)
 
 
-def build_file_end(transfer_id: str, total_chunks: int, total_bytes: int, *, limits=DEFAULT_LIMITS) -> Message:
+def build_file_end(transfer_id: str, total_chunks: int, total_bytes: int, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
     return build_message(MessageType.FILE_END, transfer_id=transfer_id, total_chunks=total_chunks,
                          total_bytes=total_bytes, limits=limits)
 
 
 def build_file_result(transfer_id: str, ok: bool, received_bytes: int, sha256: str | None = None,
-                      error_code: ErrorCode | None = None, *, limits=DEFAULT_LIMITS) -> Message:
+                      error_code: ErrorCode | None = None, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
     extra = {}
     if sha256 is not None:
         extra["sha256"] = sha256
@@ -562,8 +562,8 @@ def build_logout(reason: str | None = None) -> Message:
     return build_message(MessageType.LOGOUT, **({"reason": reason} if reason else {}))
 
 
-def build_user_list(users: list[dict] | None = None, *, ref_request_id: str | None = None,
-                    limits=DEFAULT_LIMITS) -> Message:
+def build_user_list(users: list[dict[str, Any]] | None = None, *, ref_request_id: str | None = None,
+                    limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
     """Build an empty request, or a users response referencing its request ID."""
     payload = b"" if users is None else json.dumps({"users": users}, ensure_ascii=False,
                                                    separators=(",", ":"), sort_keys=True).encode("utf-8")

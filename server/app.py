@@ -9,10 +9,11 @@ from uuid import uuid4
 
 from common.errors import ErrorCode, ProtocolError, user_message
 from common.handshake import accept_hello
-from common.models import ConnectionState, MessageType, UserInfo
+from common.models import ConnectionState, Message, MessageType, UserInfo
 from common.protocol import (Direction, build_auth_ok, build_chat_ack, build_error,
                              build_message, build_user_list)
 from common.transport import SocketTransport
+from server.auth import CredentialStore
 
 
 @dataclass
@@ -35,8 +36,9 @@ class UserSession:
 
 
 class TCPServer:
-    def __init__(self, host='127.0.0.1', port=5000, *, max_clients=64,
-                 handshake_timeout=5.0, idle_timeout=45.0, credentials=None):
+    def __init__(self, host: str = '127.0.0.1', port: int = 5000, *, max_clients: int = 64,
+                 handshake_timeout: float = 5.0, idle_timeout: float = 45.0,
+                 credentials: CredentialStore | None = None) -> None:
         if type(max_clients) is not int or max_clients < 1:
             raise ValueError('max_clients must be a positive integer')
         if any(not math.isfinite(value) or value <= 0
@@ -46,13 +48,13 @@ class TCPServer:
         if not ipaddress.ip_address(address).is_loopback:
             raise ValueError('TCP server requires a loopback bind until TLS is implemented')
         self.credentials = credentials
-        self._users = {}
+        self._users: dict[str, UserSession] = {}
         self.handshake_timeout = handshake_timeout
         self.idle_timeout = idle_timeout
         self.max_clients = max_clients
         self._lock = threading.Lock()
         self._stopping = threading.Event()
-        self._connections = {}
+        self._connections: dict[str, Connection] = {}
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -64,17 +66,17 @@ class TCPServer:
             self._listener.close()
             raise
 
-    def connections(self):
+    def connections(self) -> dict[str, Connection]:
         """Return copies of records under the registry lock."""
         with self._lock:
             return {key: replace(value) for key, value in self._connections.items()}
 
-    def users(self):
+    def users(self) -> dict[str, UserSession]:
         """Snapshot of authenticated sessions; credential data is never included."""
         with self._lock:
             return dict(self._users)
 
-    def serve_forever(self):
+    def serve_forever(self) -> None:
         try:
             while not self._stopping.is_set():
                 try:
@@ -102,7 +104,7 @@ class TCPServer:
         finally:
             self.shutdown()
 
-    def _run_client(self, key, connection):
+    def _run_client(self, key: str, connection: socket.socket) -> None:
         try:
             with connection:
                 transport = SocketTransport(connection, direction=Direction.CLIENT_TO_SERVER)
@@ -137,7 +139,8 @@ class TCPServer:
                     record.state = ConnectionState.CLOSED
                     record.auth_ready.set()  # Release any route waiting for AUTH_OK.
 
-    def _session_loop(self, key, connection, transport):
+    def _session_loop(self, key: str, connection: socket.socket,
+                      transport: SocketTransport) -> None:
         username = None
         failures = 0
         while not self._stopping.is_set():
@@ -194,7 +197,8 @@ class TCPServer:
             if failures >= 3 or message.type not in {MessageType.AUTH, MessageType.USER_LIST, MessageType.LOGOUT, MessageType.CHAT_PRIVATE}:
                 return
 
-    def _route_private(self, username, message, sender_transport):
+    def _route_private(self, username: str, message: Message,
+                       sender_transport: SocketTransport) -> ErrorCode | None:
         recipient = message.header['recipient']
         with self._lock:
             session = self._users.get(recipient)
@@ -230,7 +234,7 @@ class TCPServer:
         sender_transport.send(build_chat_ack(message.header['request_id'], message_id, timestamp_ms))
         return None
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         """Stop admissions, interrupt blocked I/O and join all registered workers."""
         with self._lock:
             self._stopping.set()

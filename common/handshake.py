@@ -2,9 +2,10 @@
 from common.errors import ErrorCode, ProtocolError
 from common.models import Message, MessageType
 from common.protocol import build_hello, build_hello_ack
+from common.transport import SocketTransport
 
 
-def accept_hello(transport, server_name: str = 'LanLink') -> Message:
+def accept_hello(transport: SocketTransport, server_name: str = 'LanLink') -> Message:
     hello = transport.receive()
     if hello is None:
         raise EOFError('Peer disconnected before HELLO')
@@ -15,7 +16,7 @@ def accept_hello(transport, server_name: str = 'LanLink') -> Message:
     return hello
 
 
-def initiate_hello(transport, client_name: str = 'LanLink') -> Message:
+def initiate_hello(transport: SocketTransport, client_name: str = 'LanLink') -> Message:
     hello = build_hello(client_name)
     transport.send(hello)
     reply = transport.receive()

@@ -8,26 +8,30 @@ import json
 import queue
 import socket
 import threading
+from typing import Any, Callable
 
 from common.errors import ErrorCode, LanLinkError, ProtocolError
-from common.models import MessageType
+from common.models import Message, MessageType
 from common.protocol import build_chat_private, build_logout, build_user_list
+from common.transport import SocketTransport
 
 
 class PrivateChatClient:
-    def __init__(self, transport, *, timeout=5.0, on_message, on_disconnect=None):
+    def __init__(self, transport: SocketTransport, *, timeout: float = 5.0,
+                 on_message: Callable[[Message], None],
+                 on_disconnect: Callable[[], None] | None = None) -> None:
         self.transport = transport
         self.timeout = timeout
         self.on_message = on_message
         self.on_disconnect = on_disconnect
         self._lock = threading.Lock()
-        self._pending = {}
+        self._pending: dict[str, queue.Queue[Message | BaseException]] = {}
         self._error = None
         self._stopped = threading.Event()
         self._reader = threading.Thread(target=self._read_loop, name='lanlink-client-reader')
         self._reader.start()
 
-    def _fail(self, error):
+    def _fail(self, error: BaseException) -> None:
         with self._lock:
             if self._error is None:
                 self._error = error
@@ -37,7 +41,7 @@ class PrivateChatClient:
         for inbox in pending:
             inbox.put_nowait(error)
 
-    def _read_loop(self):
+    def _read_loop(self) -> None:
         try:
             while not self._stopped.is_set():
                 try:
@@ -62,8 +66,8 @@ class PrivateChatClient:
             if self.on_disconnect is not None:
                 self.on_disconnect()
 
-    def _request(self, message, expected):
-        inbox = queue.Queue(maxsize=1)
+    def _request(self, message: Message, expected: MessageType) -> Message:
+        inbox: queue.Queue[Message | BaseException] = queue.Queue(maxsize=1)
         ref = message.header['request_id']
         with self._lock:
             if self._error is not None:
@@ -89,14 +93,14 @@ class PrivateChatClient:
             raise ProtocolError(ErrorCode.INVALID_FIELD, 'Unexpected response type')
         return reply
 
-    def send_private(self, recipient, text):
+    def send_private(self, recipient: str, text: str) -> Message:
         return self._request(build_chat_private(recipient, text), MessageType.CHAT_ACK)
 
-    def users(self):
+    def users(self) -> list[dict[str, Any]]:
         reply = self._request(build_user_list(), MessageType.USER_LIST)
         return json.loads(reply.payload)['users']
 
-    def logout(self):
+    def logout(self) -> None:
         try:
             self.transport.send(build_logout())
             if not self._stopped.wait(self.timeout):
@@ -104,7 +108,7 @@ class PrivateChatClient:
         finally:
             self.close()
 
-    def close(self):
+    def close(self) -> None:
         self._fail(EOFError('Client closed'))
         try:
             self.transport.connection.shutdown(socket.SHUT_RDWR)
