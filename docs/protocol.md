@@ -710,5 +710,15 @@ is unchanged. Multiple list requests can be outstanding within the shared 64-req
 limit, and responses may arrive in any order. Unknown or completed references are
 protocol errors. A response timeout terminates the session and wakes every pending
 caller. This tightens the version 1 wire schema: old USER_LIST responses without a
-reference are rejected, so client and server must be upgraded together. EOF/shutdown wakes waiters and
-joins the reader. Both server and CLI require loopback access until TLS exists.
+reference are rejected, so client and server must be upgraded together. EOF/shutdown
+closes the client socket and wakes waiters. Cleanup claims ownership under the client
+lock, performs shutdown/close outside it, and signals completion to concurrent cleanup
+callers. Close joins the reader only from another thread. A correlated ERROR fails
+only its request; its code alone never triggers client connection cleanup. Local
+encoding validation failures remove their pending entry without closing the socket.
+Idle receive timeouts retry, while request/send timeouts preserve the existing
+session-termination policy; no expired-request history or late-response recovery is
+introduced. Unknown references and mismatched response types remain fatal. A daemon input worker sends commands
+to the CLI queue, which also receives disconnect notifications, so the CLI exits
+without waiting for another input line. Both server and CLI require loopback access
+until TLS exists.

@@ -1,6 +1,7 @@
 """Post-authentication client: one reader dispatches chat and request replies.
 
-The caller owns the socket. on_message runs on the reader thread and must return
+The client closes the socket on failure or close(); the caller may also use a
+socket context manager. on_message runs on the reader thread and must return
 promptly; it must not make synchronous client requests. Responses are correlated
 by ref_request_id, including concurrent USER_LIST requests.
 """
@@ -28,18 +29,38 @@ class PrivateChatClient:
         self._pending: dict[str, queue.Queue[Message | BaseException]] = {}
         self._error = None
         self._stopped = threading.Event()
+        self._cleanup_done = threading.Event()
         self._reader = threading.Thread(target=self._read_loop, name='lanlink-client-reader')
         self._reader.start()
 
     def _fail(self, error: BaseException) -> None:
         with self._lock:
-            if self._error is None:
+            first = self._error is None
+            if first:
                 self._error = error
-            pending = list(self._pending.values())
-            self._pending.clear()
-            self._stopped.set()
-        for inbox in pending:
-            inbox.put_nowait(error)
+                pending = list(self._pending.values())
+                self._pending.clear()
+                self._stopped.set()
+        if not first:
+            # A concurrent reader/close must not notify disconnect before the
+            # thread that claimed cleanup has actually closed the descriptor.
+            self._cleanup_done.wait()
+            return
+        try:
+            # No shared registry lock during socket operations. Shutdown wakes
+            # receive(); close releases the descriptor, once per client session.
+            try:
+                self.transport.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self.transport.connection.close()
+            except OSError:
+                pass
+        finally:
+            self._cleanup_done.set()
+            for inbox in pending:
+                inbox.put_nowait(error)
 
     def _read_loop(self) -> None:
         try:
@@ -81,12 +102,21 @@ class PrivateChatClient:
                 reply = inbox.get(timeout=self.timeout)
             except queue.Empty:
                 raise TimeoutError('Timed out waiting for server response') from None
+        except ProtocolError:
+            # SocketTransport validates/encodes before writing any bytes. A
+            # rejected local message affects only this request, not the stream.
+            with self._lock:
+                self._pending.pop(ref, None)
+            raise
         except (OSError, EOFError):
-            self.close()  # A timeout or transport failure terminates the session.
+            # TimeoutError is an OSError too. Keep the existing close-on-timeout
+            # policy: do not reuse a session with an unresolved/late response.
+            self.close()
             raise
         if isinstance(reply, BaseException):
             raise reply
         if reply.type == MessageType.ERROR:
+            # A correlated ERROR is a request failure; the reader stays active.
             raise LanLinkError(reply.header['code'])
         if reply.type != expected:
             self.close()
@@ -110,9 +140,5 @@ class PrivateChatClient:
 
     def close(self) -> None:
         self._fail(EOFError('Client closed'))
-        try:
-            self.transport.connection.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
         if threading.current_thread() is not self._reader:
             self._reader.join()

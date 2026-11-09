@@ -133,14 +133,32 @@ errors preserve the sender session. Invalid schema/framing closes that connectio
 unsupported public chat returns ERROR(INVALID_FIELD) and closes it.
 
 After synchronous HELLO/AUTH, `PrivateChatClient` owns the connection's sole socket
-reader thread. The main CLI thread reads commands and sends requests. The reader
+reader thread. A daemon input worker reads commands; the main CLI thread handles
+commands and disconnect notifications through a queue and sends requests. The reader
 prints incoming private messages through a callback and puts ACK/ERROR/USER_LIST
 responses in bounded per-request queues keyed by `ref_request_id`. Multiple
 USER_LIST requests may be outstanding on the same connection (within the shared
 64-request limit). Main-thread requests never call receive once the reader starts. Callback
 functions run on the reader and must return promptly without making synchronous
-client requests. Disconnects wake pending requests; close shuts down the socket
-and joins the reader. The socket is closed by its owning context manager.
+client requests. Disconnects wake pending requests and promptly shut down and close
+the socket. Cleanup is idempotent; close joins the reader unless called by that
+reader itself. A surrounding socket context manager may safely close it again.
+
+A correlated protocol ERROR fails only its request, including codes such as
+RECIPIENT_OFFLINE, AUTH_FAILED, TIMEOUT and CONNECTION_LOST. Local validation
+failures before writing also leave the connection usable and remove any pending
+request entry. The CLI displays these request errors and accepts another command.
+The authentication helper permits retries on the same socket; the CLI's existing
+single login attempt still exits on authentication failure.
+
+EOF, socket errors, malformed incoming frames, mismatched response types and
+unknown/duplicate response references terminate the session. Idle socket read
+timeouts merely retry; a request's response deadline or send timeout still closes
+the session and fails all pending requests. This preserves the existing timeout
+policy: operations may already have reached the server, and late responses cannot
+be reused by another request. Retrying requires a new connection. Cleanup claims
+ownership under the lock, performs socket operations outside it, and makes other
+cleanup callers wait for descriptor closure before notifying disconnect.
 
 USER_LIST requests retain their empty payload and existing header schema. Each
 server response now requires `ref_request_id` equal to the original request's
@@ -150,8 +168,9 @@ responses without the reference and responses with unknown or already-completed
 references are rejected. As with other requests, a response timeout closes the
 client session and wakes all pending callers; retry requires a new connection.
 
-Terminal output may interrupt the current prompt. A server disconnect is printed
-while input waits; press Enter to let the main input loop observe the failure.
+Terminal output may interrupt the current prompt. A server disconnect exits the
+CLI without another keystroke. Python's blocking input cannot be portably cancelled;
+the input worker is a daemon and is never joined while waiting for a line.
 Direct forwarding is blocking and bounded by the socket timeout; there is no
 outbound queue or slow-reader fairness policy yet. Session inactivity is based
 on client requests, so incoming chat alone does not reset the server idle deadline.

@@ -4,8 +4,11 @@ import getpass
 import ipaddress
 import json
 import math
+import os
+import queue
 import socket
 import sys
+import threading
 from typing import Any
 
 from common.errors import ErrorCode, LanLinkError, ProtocolError
@@ -60,6 +63,22 @@ def request_users(transport: SocketTransport) -> list[dict[str, Any]]:
     return json.loads(reply.payload)['users']
 
 
+def _read_command(prompt: str) -> str:
+    """Read a line without holding stdin's buffered lock during interpreter exit."""
+    print(prompt, end='', flush=True)
+    data = bytearray()
+    while True:
+        byte = os.read(sys.stdin.fileno(), 1)
+        if not byte:
+            if not data:
+                raise EOFError
+            break
+        if byte == b'\n':
+            break
+        data.extend(byte)
+    return data.decode(sys.stdin.encoding or 'utf-8', errors=sys.stdin.errors or 'strict').rstrip('\r')
+
+
 def login_cli(host: str, port: int, username: str, timeout: float) -> None:
     with _connect_local(host, port, timeout) as connection:
         if not ipaddress.ip_address(connection.getpeername()[0]).is_loopback:
@@ -72,16 +91,49 @@ def login_cli(host: str, port: int, username: str, timeout: float) -> None:
             print(f'\n[{message.header["sender"]} -> {username}] '
                   f'{message.payload.decode("utf-8")}', flush=True)
 
+        commands: queue.Queue[str | BaseException | None] = queue.Queue()
+        disconnected = threading.Event()
+        read_next = threading.Event()
+
+        def notify_disconnect() -> None:
+            disconnected.set()
+            commands.put_nowait(None)
+            read_next.set()
+            print('\nDisconnected.', flush=True)
+
+        def read_commands() -> None:
+            while True:
+                read_next.wait()
+                read_next.clear()
+                if disconnected.is_set():
+                    return
+                try:
+                    command = _read_command('> ')
+                except EOFError:
+                    command = '/logout'
+                except BaseException as error:
+                    commands.put_nowait(error)
+                    return
+                if disconnected.is_set():
+                    return
+                commands.put_nowait(command)
+
         client = PrivateChatClient(transport, timeout=timeout, on_message=display,
-                                   on_disconnect=lambda: print('\nDisconnected.', flush=True))
+                                   on_disconnect=notify_disconnect)
         try:
             print(json.dumps({'users': client.users()}, ensure_ascii=False, indent=2))
             print('Commands: /msg USER TEXT, /users (or Enter), /logout')
-            while True:
-                try:
-                    command = input('> ').strip()
-                except EOFError:
-                    command = '/logout'
+            # Only this daemon reads stdin. Raw reads avoid a buffered-stdin lock
+            # preventing interpreter exit while it waits for an unfinished line.
+            threading.Thread(target=read_commands, name='lanlink-cli-input', daemon=True).start()
+            while not disconnected.is_set():
+                read_next.set()
+                command = commands.get()
+                if command is None or disconnected.is_set():
+                    return
+                if isinstance(command, BaseException):
+                    raise command
+                command = command.strip()
                 try:
                     if command in {'logout', '/logout'}:
                         client.logout()
@@ -98,9 +150,17 @@ def login_cli(host: str, port: int, username: str, timeout: float) -> None:
                     else:
                         print('Commands: /msg USER TEXT, /users, /logout')
                 except LanLinkError as error:
-                    if isinstance(error, ProtocolError):
+                    if isinstance(error, ProtocolError) and connection.fileno() == -1:
                         raise
+                    # A local builder/encoder rejection has not damaged the
+                    # connection; let the user correct the command and retry.
                     print(f'Request failed: {error}')
+        except (OSError, EOFError):
+            # Network loss can also wake an in-flight request rather than the
+            # command queue. Do not silently classify stdin errors as disconnects.
+            if connection.fileno() != -1:
+                raise
+            return
         finally:
             client.close()
 

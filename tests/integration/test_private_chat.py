@@ -2,10 +2,14 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 import json
+import os
+from pathlib import Path
 import queue
 import secrets
 import socket
 import struct
+import subprocess
+import sys
 import threading
 import time
 
@@ -15,8 +19,9 @@ from client.__main__ import authenticate, main as client_main, request_users
 from client.private_chat import PrivateChatClient
 from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.models import Message, MessageType
-from common.protocol import (build_chat_ack, build_chat_private, build_chat_public,
+from common.protocol import (Direction, build_chat_ack, build_chat_private, build_chat_public,
                              build_error, build_user_list, encode_message)
+from common.transport import SocketTransport
 from server.app import TCPServer
 from server.auth import CredentialStore, save_user
 from tests.integration.test_auth import open_client, exchange_error
@@ -176,6 +181,7 @@ def test_user_list_timeout_wakes_concurrent_waiters_and_cleans_up(accounts, monk
         alice, _ = async_login(stack, server, accounts, 'alice')
         alice.timeout = 2
         record = server.connections()[server.users()['alice'].connection_id]
+        original_send = record.transport.send
         received = []
         both_received = threading.Event()
 
@@ -199,8 +205,96 @@ def test_user_list_timeout_wakes_concurrent_waiters_and_cleans_up(accounts, monk
         wait_until(lambda: not alice._reader.is_alive())
         assert not alice._pending
         wait_until(lambda: 'alice' not in server.users())
+        assert alice.transport.connection.fileno() == -1
+        assert len({m.header['ref_request_id'] for m in received}) == 2
+        # A withheld response cannot be delivered on this terminated session or
+        # mistaken for a response to a subsequent request on it.
+        with pytest.raises(OSError):
+            original_send(received[0])
         with pytest.raises(EOFError):
             alice.users()  # Timed-out connections cannot be reused for a later request.
+
+
+@pytest.mark.parametrize('code', [ErrorCode.RECIPIENT_OFFLINE, ErrorCode.TIMEOUT,
+                                 ErrorCode.CONNECTION_LOST])
+def test_correlated_error_only_fails_its_request(accounts, monkeypatch, code):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        disconnected = threading.Event()
+        alice.on_disconnect = disconnected.set
+        record = server.connections()[server.users()['alice'].connection_id]
+        original_send = record.transport.send
+        responses = []
+
+        def respond(message):
+            responses.append(message)
+            if len(responses) == 2:
+                original_send(build_error(code, 'Request rejected',
+                                         ref_request_id=responses[0].header['ref_request_id']))
+                original_send(responses[1])
+            elif len(responses) > 2:
+                original_send(message)
+
+        monkeypatch.setattr(record.transport, 'send', respond)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(alice.users) for _ in range(2)]
+            results = [future.exception(timeout=3) for future in futures]
+        assert sum(isinstance(result, LanLinkError) for result in results) == 1
+        assert next(result for result in results if result is not None).code == code
+        successful = next(future for future in futures if future.exception() is None)
+        assert successful.result()[0]['username'] == 'alice'
+        assert alice.users()[0]['username'] == 'alice'  # Same connection remains usable.
+        assert alice.transport.connection.fileno() >= 0 and alice._reader.is_alive()
+        assert alice._error is None and not alice._pending
+        assert not disconnected.is_set()
+
+
+def test_failed_authentication_can_retry_on_same_connection(accounts):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        connection, transport = open_client(stack, server)
+        with pytest.raises(LanLinkError) as caught:
+            authenticate(transport, 'alice', 'incorrect-password')
+        assert caught.value.code == ErrorCode.AUTH_FAILED
+        assert connection.fileno() >= 0
+        authenticate(transport, 'alice', accounts[1]['alice'])
+        assert request_users(transport)[0]['username'] == 'alice'
+
+
+def test_local_validation_error_does_not_close_or_leave_pending_request(accounts):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        with pytest.raises(ProtocolError):
+            alice.send_private('invalid username', 'not sent')
+        request = build_user_list()
+        invalid = Message({**request.header, 'unexpected': True}, request.payload)
+        with pytest.raises(ProtocolError):
+            alice._request(invalid, MessageType.USER_LIST)
+        assert not alice._pending and alice._error is None
+        assert alice.transport.connection.fileno() >= 0
+        assert alice.users()[0]['username'] == 'alice'
+
+
+def test_idle_socket_read_timeout_keeps_reader_active(accounts, monkeypatch):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        connection, transport = login(stack, server, accounts, 'alice')
+        connection.settimeout(0.05)
+        original_receive = transport.receive
+        timed_out = threading.Event()
+
+        def receive():
+            try:
+                return original_receive()
+            except socket.timeout:
+                timed_out.set()
+                raise
+
+        monkeypatch.setattr(transport, 'receive', receive)
+        alice = PrivateChatClient(transport, timeout=2, on_message=lambda message: None)
+        stack.callback(alice.close)
+        assert timed_out.wait(timeout=1)
+        assert alice._reader.is_alive() and alice._error is None
+        assert connection.fileno() >= 0
+        assert alice.users()[0]['username'] == 'alice'
 
 
 @pytest.mark.parametrize('response', ['unknown-ref', 'missing-ref', 'wrong-type', 'error'])
@@ -362,9 +456,205 @@ def test_shutdown_terminates_client_readers_and_cleans_sessions(accounts):
         server.shutdown()
         for client in (alice, bob):
             wait_until(lambda: not client._reader.is_alive())
+            assert client.transport.connection.fileno() == -1
         assert not server.users() and not server.connections()
         with pytest.raises(EOFError):
             alice.users()
+
+
+@pytest.mark.parametrize('mode', ['eof', 'truncated', 'malformed'])
+def test_disconnect_closes_client_socket_before_notification(accounts, mode):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        notified = threading.Event()
+        descriptors = []
+
+        def disconnected():
+            descriptors.append(alice.transport.connection.fileno())
+            notified.set()
+
+        alice.on_disconnect = disconnected
+        record = server.connections()[server.users()['alice'].connection_id]
+        if mode == 'malformed':
+            record.socket.sendall(struct.pack('!I', 0))
+        else:
+            if mode == 'truncated':
+                record.socket.sendall(struct.pack('!I', 10) + b'{')
+            record.socket.shutdown(socket.SHUT_WR)
+        assert notified.wait(timeout=2)
+        assert descriptors == [-1]
+        wait_until(lambda: not alice._reader.is_alive())
+        assert not alice._pending
+        wait_until(lambda: 'alice' not in server.users())
+        if mode == 'eof':
+            assert isinstance(alice._error, EOFError)
+        else:
+            assert isinstance(alice._error, ProtocolError)
+        alice.close()
+        alice.close()
+        assert descriptors == [-1]
+
+
+def test_socket_reset_is_fatal_and_closes_client():
+    with ExitStack() as stack:
+        listener = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        listener.settimeout(2)
+        connection = stack.enter_context(socket.create_connection(listener.getsockname(), timeout=2))
+        peer, _ = listener.accept()
+        stack.enter_context(peer)
+        disconnected = threading.Event()
+        client = PrivateChatClient(SocketTransport(connection, direction=Direction.SERVER_TO_CLIENT),
+                                   on_message=lambda message: None, on_disconnect=disconnected.set)
+        stack.callback(client.close)
+        peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+        peer.close()  # RST, not an orderly EOF.
+        assert disconnected.wait(timeout=2)
+        wait_until(lambda: not client._reader.is_alive())
+        assert isinstance(client._error, ConnectionResetError)
+        assert connection.fileno() == -1 and not client._pending
+
+
+def test_concurrent_close_and_reader_callback_are_idempotent(accounts, monkeypatch):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        connection = alice.transport.connection
+        calls = {'shutdown': 0, 'close': 0}
+        call_lock = threading.Lock()
+        notified = threading.Event()
+
+        def disconnected():
+            alice.close()  # Running on the reader: must not join itself.
+            notified.set()
+
+        alice.on_disconnect = disconnected
+        for name in calls:
+            original = getattr(socket.socket, name)
+
+            def counted(sock, *args, operation=name, method=original):
+                if sock is connection:
+                    with call_lock:
+                        calls[operation] += 1
+                return method(sock, *args)
+
+            monkeypatch.setattr(socket.socket, name, counted)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(alice.close) for _ in range(8)]
+            for future in futures:
+                future.result(timeout=3)
+        assert notified.wait(timeout=1)
+        assert calls == {'shutdown': 1, 'close': 1}
+        assert connection.fileno() == -1
+        assert not alice._reader.is_alive() and not alice._pending
+        wait_until(lambda: 'alice' not in server.users())
+
+
+def test_cleanup_releases_shared_lock_during_socket_operations(accounts, monkeypatch):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        connection = alice.transport.connection
+        entered = threading.Event()
+        release = threading.Event()
+        notified = threading.Event()
+        alice.on_disconnect = notified.set
+        original_shutdown = socket.socket.shutdown
+
+        def delayed_shutdown(sock, how):
+            if sock is connection:
+                entered.set()
+                assert release.wait(timeout=2)
+            return original_shutdown(sock, how)
+
+        monkeypatch.setattr(socket.socket, 'shutdown', delayed_shutdown)
+        closer = threading.Thread(target=alice.close)
+        closer.start()
+        try:
+            assert entered.wait(timeout=1)
+            assert alice._lock.acquire(timeout=0.5), 'Cleanup held the registry lock during shutdown'
+            alice._lock.release()
+            assert not notified.is_set()  # Cleanup has not closed the socket yet.
+        finally:
+            release.set()
+            closer.join(timeout=3)
+        assert not closer.is_alive()
+        assert notified.is_set() and connection.fileno() == -1
+
+
+@pytest.mark.parametrize('mode', ['peer-disconnect', 'server-shutdown', 'idle-timeout',
+                                 'partial-input', 'logout', 'stdin-eof', 'request-error'])
+def test_cli_termination_and_cleanup(accounts, mode):
+    with running(credentials=accounts[0], idle_timeout=1 if mode == 'idle-timeout' else 45) as server:
+        # Disconnect cases keep stdin open, including an unfinished line. Also
+        # exercise normal commands and stdin EOF using the actual input reader.
+        code = ('import os; from client import __main__ as cli; '
+                'cli.getpass.getpass = lambda prompt: os.environ["LANLINK_TEST_PASSWORD"]; '
+                f'raise SystemExit(cli.main(["--port", "{server.address[1]}", "--username", "alice"]))')
+        environment = dict(os.environ, LANLINK_TEST_PASSWORD=accounts[1]['alice'])
+        with subprocess.Popen([sys.executable, '-u', '-c', code],
+                              cwd=Path(__file__).resolve().parents[2], env=environment,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True) as process:
+            output = []
+
+            def capture():
+                while True:
+                    char = process.stdout.read(1)
+                    if not char:
+                        return
+                    output.append(char)
+
+            reader = threading.Thread(target=capture, daemon=True)
+            reader.start()
+            try:
+                wait_until(lambda: '> ' in ''.join(output))
+                assert process.poll() is None
+                if mode in {'peer-disconnect', 'partial-input'}:
+                    if mode == 'partial-input':
+                        process.stdin.write('/msg bob unfinished')
+                        process.stdin.flush()
+                    record = server.connections()[server.users()['alice'].connection_id]
+                    record.socket.shutdown(socket.SHUT_RDWR)
+                elif mode == 'server-shutdown':
+                    server.shutdown()
+                elif mode == 'logout':
+                    process.stdin.write('/users\n/logout\n')
+                    process.stdin.flush()
+                elif mode == 'stdin-eof':
+                    process.stdin.close()
+                elif mode == 'request-error':
+                    process.stdin.write(f'/msg {"x" * 33} hello\n/msg offline hello\n/users\n')
+                    process.stdin.flush()
+                    wait_until(lambda: ''.join(output).count('Request failed:') == 2 and
+                               ''.join(output).count('"username": "alice"') >= 2)
+                    assert process.poll() is None
+                    assert 'alice' in server.users()
+                    server.shutdown()
+                assert process.wait(timeout=3) == 0
+                reader.join(timeout=1)
+                assert not reader.is_alive()
+                assert process.stdin.closed == (mode == 'stdin-eof')
+                assert 'Disconnected.' in ''.join(output)
+                assert process.stderr.read() == ''
+                wait_until(lambda: 'alice' not in server.users())
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=3)
+                reader.join(timeout=1)
+
+
+def test_cli_does_not_silently_treat_stdin_error_as_disconnect(accounts, monkeypatch, capsys):
+    with running(credentials=accounts[0]) as server:
+        monkeypatch.setattr('client.__main__.getpass.getpass', lambda prompt: accounts[1]['alice'])
+
+        def failed_input(prompt):
+            raise OSError('stdin unavailable')
+
+        monkeypatch.setattr('client.__main__._read_command', failed_input)
+        assert client_main(['--port', str(server.address[1]), '--username', 'alice']) == 1
+        assert 'stdin unavailable' in capsys.readouterr().err
+        wait_until(lambda: 'alice' not in server.users())
 
 
 def test_cli_receives_while_input_is_waiting(accounts, monkeypatch, capsys):
@@ -382,7 +672,7 @@ def test_cli_receives_while_input_is_waiting(accounts, monkeypatch, capsys):
                 wait_until(lambda: 'received while input waits' in capsys.readouterr().out)
             return next(commands)
 
-        monkeypatch.setattr('builtins.input', input_waiting)
+        monkeypatch.setattr('client.__main__._read_command', input_waiting)
         assert client_main(['--port', str(server.address[1]), '--username', 'alice']) == 0
         assert inbox.get(timeout=2).payload == b'from CLI'
         wait_until(lambda: 'alice' not in server.users())
@@ -412,6 +702,7 @@ def test_disconnect_wakes_pending_ack_waiter(accounts, monkeypatch):
             alice.send_private('bob', 'accepted write but ACK connection lost')
         assert inbox.get(timeout=2).header['sender'] == 'alice'
         wait_until(lambda: not alice._reader.is_alive())
+        assert alice.transport.connection.fileno() == -1
         assert not alice._pending
         wait_until(lambda: 'alice' not in server.users())
         assert bob.users()[0]['username'] == 'bob'

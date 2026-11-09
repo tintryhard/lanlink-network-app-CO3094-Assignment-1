@@ -261,7 +261,7 @@ def test_cli_create_account_login_list_and_logout(tmp_path, monkeypatch, capsys)
     with running(credentials=CredentialStore.load(path)) as server:
         monkeypatch.setattr('client.__main__.getpass.getpass', lambda prompt: password)
         commands = iter(['', 'logout'])
-        monkeypatch.setattr('builtins.input', lambda prompt: next(commands))
+        monkeypatch.setattr('client.__main__._read_command', lambda prompt: next(commands))
         assert client_main(['--port', str(server.address[1]), '--username', 'demo']) == 0
         wait_until(lambda: not server.users())
     output = capsys.readouterr()
