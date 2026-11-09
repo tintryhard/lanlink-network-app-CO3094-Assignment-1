@@ -28,3 +28,7 @@ certs/
 data/
 downloads/
 logs/
+
+Specification files
+Spec.md
+Task.md

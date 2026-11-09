@@ -1,5 +1,5 @@
-"""Bounded thread-per-client TCP server; HELLO, authentication and user management."""
-from dataclasses import asdict, dataclass, replace
+"""Bounded thread-per-client TCP server; HELLO, authentication and private messaging."""
+from dataclasses import asdict, dataclass, field, replace
 import ipaddress
 import math
 import socket
@@ -10,7 +10,8 @@ from uuid import uuid4
 from common.errors import ErrorCode, ProtocolError, user_message
 from common.handshake import accept_hello
 from common.models import ConnectionState, MessageType, UserInfo
-from common.protocol import Direction, build_auth_ok, build_error, build_user_list
+from common.protocol import (Direction, build_auth_ok, build_chat_ack, build_error,
+                             build_message, build_user_list)
 from common.transport import SocketTransport
 
 
@@ -20,6 +21,8 @@ class Connection:
     socket: socket.socket
     worker: threading.Thread
     state: ConnectionState = ConnectionState.CONNECTING
+    transport: SocketTransport | None = None
+    auth_ready: threading.Event = field(default_factory=threading.Event, repr=False)
 
 
 @dataclass(frozen=True)
@@ -39,8 +42,9 @@ class TCPServer:
         if any(not math.isfinite(value) or value <= 0
                for value in (handshake_timeout, idle_timeout)):
             raise ValueError('timeouts must be positive and finite')
-        if credentials is not None and not ipaddress.ip_address(socket.gethostbyname(host)).is_loopback:
-            raise ValueError('Password authentication requires a loopback bind until TLS is implemented')
+        address = socket.gethostbyname(host)
+        if not ipaddress.ip_address(address).is_loopback:
+            raise ValueError('TCP server requires a loopback bind until TLS is implemented')
         self.credentials = credentials
         self._users = {}
         self.handshake_timeout = handshake_timeout
@@ -52,7 +56,7 @@ class TCPServer:
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._listener.bind((host, port))
+            self._listener.bind((address, port))
             self._listener.listen(max_clients)
             self._listener.settimeout(0.1)
             self.address = self._listener.getsockname()
@@ -102,6 +106,8 @@ class TCPServer:
         try:
             with connection:
                 transport = SocketTransport(connection, direction=Direction.CLIENT_TO_SERVER)
+                with self._lock:
+                    self._connections[key].transport = transport
                 transport.read_deadline = time.monotonic() + self.handshake_timeout
                 connection.settimeout(self.handshake_timeout)
                 try:
@@ -129,6 +135,7 @@ class TCPServer:
                 record = self._connections.pop(key, None)
                 if record is not None:
                     record.state = ConnectionState.CLOSED
+                    record.auth_ready.set()  # Release any route waiting for AUTH_OK.
 
     def _session_loop(self, key, connection, transport):
         username = None
@@ -163,6 +170,8 @@ class TCPServer:
                             username = candidate
                     if code is None:
                         transport.send(build_auth_ok(message.header['request_id'], username))
+                        with self._lock:
+                            self._connections[key].auth_ready.set()
                         continue
             elif username is None:
                 code = ErrorCode.NOT_AUTHENTICATED
@@ -172,14 +181,54 @@ class TCPServer:
                              for s in sorted(self._users.values(), key=lambda s: s.username)]
                 transport.send(build_user_list(users))
                 continue
+            elif message.type == MessageType.CHAT_PRIVATE:
+                code = self._route_private(username, message, transport)
+                if code is None:
+                    continue
             elif message.type == MessageType.LOGOUT:
                 return
             else:
                 code = ErrorCode.INVALID_FIELD
             transport.send(build_error(code, user_message(code),
                                        ref_request_id=message.header['request_id']))
-            if failures >= 3 or message.type not in {MessageType.AUTH, MessageType.USER_LIST, MessageType.LOGOUT}:
+            if failures >= 3 or message.type not in {MessageType.AUTH, MessageType.USER_LIST, MessageType.LOGOUT, MessageType.CHAT_PRIVATE}:
                 return
+
+    def _route_private(self, username, message, sender_transport):
+        recipient = message.header['recipient']
+        with self._lock:
+            session = self._users.get(recipient)
+            target = self._connections.get(session.connection_id) if session else None
+        if target is None:
+            # No active session, whether the account exists or not.
+            return ErrorCode.RECIPIENT_OFFLINE
+        # Never send unsolicited chat before the target's AUTH_OK. Also released
+        # by worker cleanup if its authentication reply could not be sent.
+        if not target.auth_ready.wait(self.idle_timeout):
+            return ErrorCode.CONNECTION_LOST
+        with self._lock:
+            if (self._stopping.is_set() or self._users.get(recipient) != session or
+                    self._connections.get(session.connection_id) is not target or
+                    target.state != ConnectionState.AUTHENTICATED):
+                return ErrorCode.RECIPIENT_OFFLINE
+        message_id = uuid4().hex
+        timestamp_ms = int(time.time() * 1000)
+        forwarded = build_message(MessageType.CHAT_PRIVATE, message.payload,
+                                  recipient=recipient, sender=username,
+                                  message_id=message_id, timestamp_ms=timestamp_ms)
+        try:
+            # Exactly the same transport/write lock used for this peer's replies.
+            target.transport.send(forwarded)
+        except OSError:
+            # A partially written frame makes the recipient stream unusable.
+            try:
+                target.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            return ErrorCode.CONNECTION_LOST
+        # Acceptance is not a recipient read receipt (nor durable delivery).
+        sender_transport.send(build_chat_ack(message.header['request_id'], message_id, timestamp_ms))
+        return None
 
     def shutdown(self):
         """Stop admissions, interrupt blocked I/O and join all registered workers."""

@@ -209,7 +209,7 @@ ProtocolError and TransferError expose `.code` and `.message`. The Vietnamese te
 | NOT_AUTHENTICATED | Operation requires an authenticated session | A Stage 3 authentication/session | ERROR | Bạn cần đăng nhập trước. |
 | AUTH_FAILED | Credentials could not be verified | A Stage 3 authentication/session | ERROR | Tên đăng nhập hoặc mật khẩu không đúng. |
 | ALREADY_LOGGED_IN | Account already has an active session | A Stage 3 authentication/session | ERROR | Tài khoản đang đăng nhập ở nơi khác. |
-| RECIPIENT_OFFLINE | Known recipient has no active session | A router/session (required; NOT IMPLEMENTED) | ERROR (planned) | Người nhận đang ngoại tuyến. |
+| RECIPIENT_OFFLINE | Recipient has no active authenticated session | Stage 4A private routing | ERROR | Người nhận đang ngoại tuyến. |
 | RECIPIENT_UNKNOWN | Recipient account does not exist | A router/session (required; NOT IMPLEMENTED) | ERROR (planned) | Không tìm thấy người nhận. |
 | QUEUE_FULL | Bounded connection output queue cannot accept work | A router/session (required; NOT IMPLEMENTED) | ERROR (planned) | Hàng đợi đã đầy. Vui lòng thử lại. |
 | TIMEOUT | Accept/result/engine inactivity deadline expired | sender/receiver engines; load client; A transport/router (planned) | local FAILED; service sends FILE_CANCEL(TIMEOUT); A sends ERROR(CONNECTION_LOST, transfer_id) to surviving peer (planned) | Hết thời gian chờ phản hồi. |
@@ -671,7 +671,8 @@ The current server runs HELLO -> AUTH -> authenticated USER_LIST/LOGOUT over
 localhost TCP. It uses the existing AUTH/AUTH_OK/ERROR/USER_LIST/LOGOUT schemas.
 TLS in the earlier design diagrams remains planned. Credentials are loaded by
 `server.auth` from version 1 salted PBKDF2 records; the runtime enforces a loopback
-bind when credentials are configured. There is no chat/file/discovery dispatch.
+bind (always required as of Stage 4A). Stage 4A adds private chat dispatch;
+file/discovery dispatch remains unimplemented.
 
 AUTH_FAILED covers wrong passwords and unknown usernames. ALREADY_LOGGED_IN
 covers both duplicate active names and AUTH on an already authenticated socket.
@@ -680,3 +681,29 @@ close the socket. USER_LIST and LOGOUT require authentication; USER_LIST is
 request/response only. A LOGOUT closes the session without a separate ACK.
 Connection state is HELLO_ACCEPTED until AUTH_OK, then AUTHENTICATED until close.
 EOF, resets, malformed input, request deadlines and shutdown remove the user.
+
+
+## Stage 4A private-chat runtime
+
+Only authenticated CHAT_PRIVATE is routed. Sender identity comes from the session;
+server-generated message_id/timestamp_ms are shared by the forwarded CHAT_PRIVATE
+and CHAT_ACK. The ACK references the original sender request_id. Its accepted
+status acknowledges server acceptance after a successful socket write; it is not
+a read receipt or a durable-delivery guarantee. There is no sender echo except
+when explicitly messaging oneself, and no forwarding to other clients.
+
+Recipient lookup uses the authenticated user/connection registries. Forwarding
+uses the one registered recipient SocketTransport and its existing send lock,
+shared with AUTH_OK, USER_LIST and other replies. An authentication-ready event
+ensures AUTH_OK precedes unsolicited chat. Registry locks are released before
+waiting or sending. An offline/unknown account returns RECIPIENT_OFFLINE; failed
+forward writes return CONNECTION_LOST and shut down the recipient socket. Both
+errors reference the original request and preserve the sender session. Invalid
+frames or client-forged server fields are rejected by the existing decoder and
+closed. Public chat remains unsupported.
+
+The CLI transfers receive ownership to a single background reader after AUTH_OK.
+It dispatches private messages to display callbacks and correlates CHAT_ACK/ERROR
+with pending request queues. USER_LIST requests are serialized because the existing
+USER_LIST response schema has no ref_request_id. EOF/shutdown wakes waiters and
+joins the reader. Both server and CLI require loopback access until TLS exists.

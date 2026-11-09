@@ -2,8 +2,8 @@
 
 Course project skeleton for Python, TCP/UDP sockets, TLS and PySide6.
 
-**Status:** Stage 3 supports concurrent TCP handshakes, local password
-verification, authenticated user lists and logout. The server retains the bounded
+**Status:** Stage 4A supports concurrent TCP handshakes, local password
+verification, authenticated user lists, private chat and logout. The server retains the bounded
 thread-per-client architecture. Existing file-engine and file-widget components
 are not integrated into a complete application.
 
@@ -40,7 +40,7 @@ Install dependencies:
 python -m pip install -r requirements-dev.txt
 ```
 
-## Stage 3: Local authentication and user management
+## Stage 4A: Local authentication and private chat
 
 Create accounts interactively (password input is hidden):
 
@@ -64,16 +64,17 @@ python -m client --host 127.0.0.1 --port 5000 --username alice
 python -m client --host 127.0.0.1 --port 5000 --username bob
 ```
 
-The client logs in, prints the current user list, and remains connected. Press
-Enter to refresh the list or type `logout` to terminate the session. Refresh
-Alice's list after Bob logs in to see both users. EOF on terminal input logs out.
+The client logs in, prints the current user list, and remains connected. In
+Alice's terminal, send `/msg bob Hello Bob`; in Bob's, reply `/msg alice Hi Alice`.
+Private messages appear even while the recipient waits at the input prompt.
+Use `/users` (or Enter) to refresh users and `/logout` (or `logout`) to leave.
+EOF on terminal input logs out. Usernames and message text preserve their case.
 User lists are requested, not broadcast. They contain authenticated users only,
 including the requester, with username, online=true, peer IP and peer TCP port.
 
-**Passwords travel in plaintext TCP in this stage.** This is a localhost demo,
-not secure deployment authentication. Configuring credentials requires a loopback
-server bind; the login CLI also checks the connected peer is loopback before
-prompting for or sending a password. TLS is not implemented.
+**Passwords and chat travel in plaintext TCP in this stage.** This is a localhost
+demo, not secure deployment authentication. The server requires a loopback bind
+even without credentials; the CLI checks the connected peer is loopback. TLS is not implemented.
 
 Omit `--username` to run the original handshake-only client. Starting the server
 without `--users` preserves handshake functionality but rejects every AUTH.
@@ -95,7 +96,7 @@ without `--users` preserves handshake functionality but rejects every AUTH.
   names from wrong passwords. Three credential failures close that connection;
   failed attempts can otherwise be retried on the same connection.
 - Duplicate active names and repeated AUTH return ERROR(ALREADY_LOGGED_IN).
-  Repeated AUTH preserves the original session. USER_LIST/LOGOUT before AUTH
+  Repeated AUTH preserves the original session. USER_LIST/LOGOUT/CHAT_PRIVATE before AUTH
   return ERROR(NOT_AUTHENTICATED); unsupported operations are rejected and closed.
   Errors after HELLO reference the rejected request ID. AUTH before HELLO gets
   ERROR(INVALID_FIELD) followed by close; corrupt frames are closed directly.
@@ -107,21 +108,62 @@ without `--users` preserves handshake functionality but rejects every AUTH.
 
 The default connection cap is 64; excess connections are closed. There is no
 cross-connection rate limiter, account registration API, persistence of online
-state, chat routing, file transfer, UDP discovery or Qt integration in Stage 3.
+state, public broadcast, file transfer, UDP discovery or Qt integration in Stage 4A.
+
+### Private routing and client workers
+
+A CHAT_PRIVATE request contains a recipient and UTF-8 payload. The server takes
+sender identity from the authenticated session, resolves the recipient through
+`_users` and `_connections`, and stamps a new message_id and timestamp_ms. Client
+supplied sender/message_id/timestamp_ms fields are rejected by the existing codec.
+The server forwards only to that recipient, using its existing SocketTransport
+and write lock. It waits for AUTH_OK to be sent before any unsolicited chat.
+No registry lock is held during network I/O. Sending to yourself is supported.
+
+After a successful forward write, CHAT_ACK references the sender's original
+request_id and carries the forwarded message_id and timestamp_ms. Its `accepted`
+status means server acceptance after the write, **not a read receipt or durable
+recipient delivery**. A missing ACK after disconnect does not prove that the
+recipient did not receive the message; there is no automatic retry/deduplication.
+
+A missing active recipient (including an unknown account) returns
+ERROR(RECIPIENT_OFFLINE). Forward-write failure returns ERROR(CONNECTION_LOST)
+and shuts down the failed recipient socket to trigger session cleanup. Business
+errors preserve the sender session. Invalid schema/framing closes that connection;
+unsupported public chat returns ERROR(INVALID_FIELD) and closes it.
+
+After synchronous HELLO/AUTH, `PrivateChatClient` owns the connection's sole socket
+reader thread. The main CLI thread reads commands and sends requests. The reader
+prints incoming private messages through a callback and puts ACK/ERROR responses
+in bounded per-request queues keyed by ref_request_id. USER_LIST has no response
+reference field in the existing schema, so only one list request is allowed at a
+time. Main-thread requests never call receive once the reader starts. Callback
+functions run on the reader and must return promptly without making synchronous
+client requests. Disconnects wake pending requests; close shuts down the socket
+and joins the reader. The socket is closed by its owning context manager.
+
+Terminal output may interrupt the current prompt. A server disconnect is printed
+while input waits; press Enter to let the main input loop observe the failure.
+Direct forwarding is blocking and bounded by the socket timeout; there is no
+outbound queue or slow-reader fairness policy yet. Session inactivity is based
+on client requests, so incoming chat alone does not reset the server idle deadline.
 
 ### Tests
 
 ```bash
-# Stage 3 local authentication and CLI tests
-python -m pytest -q tests/integration/test_auth.py
-# Stage 1/2/3 and existing non-Qt regressions
+# Stage 4A private chat and CLI tests
+python -m pytest -q tests/integration/test_private_chat.py
+# Stage 1/2/3/4A and existing non-Qt regressions
 python -m pytest -q tests/integration tests/protocol tests/transfer tests/scripts
 ```
 
 The integration tests use real localhost sockets and generated passwords/hash
 files in temporary directories. They cover 20 simultaneous authenticated users,
 duplicate races, user-list metadata, unauthorized sequences, logout, disconnect,
-timeout and shutdown cleanup. Existing Stage 1/2 tests remain in place.
+timeout and shutdown cleanup. Private-chat tests also cover metadata/ACK matching,
+third-party isolation, offline recipients, concurrent forwarding, authentication
+reply ordering and unsolicited reception during CLI input. Stage 1–3 tests remain
+in place.
 
 ## Workflow
 1. Agree `docs/protocol.md` and module interfaces first.

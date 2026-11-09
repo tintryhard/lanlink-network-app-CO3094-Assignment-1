@@ -1,4 +1,4 @@
-"""TCP handshake and localhost login demonstration."""
+"""TCP handshake, localhost login and private chat demonstration."""
 import argparse
 import getpass
 import ipaddress
@@ -12,14 +12,24 @@ from common.handshake import initiate_hello
 from common.models import MessageType
 from common.protocol import Direction, build_auth, build_logout, build_user_list
 from common.transport import SocketTransport
+from client.private_chat import PrivateChatClient
+
+
+def _connect_local(host, port, timeout):
+    address = socket.gethostbyname(host)
+    if not ipaddress.ip_address(address).is_loopback:
+        raise ValueError('TCP client is restricted to localhost until TLS is implemented')
+    return socket.create_connection((address, port), timeout=timeout)
 
 
 def connect_hello(host: str, port: int, *, timeout: float = 5.0):
-    with socket.create_connection((host, port), timeout=timeout) as connection:
+    with _connect_local(host, port, timeout) as connection:
+        if not ipaddress.ip_address(connection.getpeername()[0]).is_loopback:
+            raise ValueError('TCP client is restricted to localhost until TLS is implemented')
         return initiate_hello(SocketTransport(connection, direction=Direction.SERVER_TO_CLIENT))
 
 
-def authenticate(transport, username: str, password: str):
+def authenticate(transport: SocketTransport, username: str, password: str):
     request = build_auth(username, password)
     transport.send(request)
     reply = transport.receive()
@@ -47,24 +57,48 @@ def request_users(transport):
 
 
 def login_cli(host, port, username, timeout):
-    with socket.create_connection((host, port), timeout=timeout) as connection:
+    with _connect_local(host, port, timeout) as connection:
         if not ipaddress.ip_address(connection.getpeername()[0]).is_loopback:
             raise ValueError('Password login is restricted to localhost until TLS is implemented')
         transport = SocketTransport(connection, direction=Direction.SERVER_TO_CLIENT)
         initiate_hello(transport)
         authenticate(transport, username, getpass.getpass('Password: '))
         print(f'Authenticated as {username}')
-        while True:
-            print(json.dumps({'users': request_users(transport)}, ensure_ascii=False, indent=2))
-            try:
-                command = input('Enter to refresh users; logout to exit: ').strip().lower()
-            except EOFError:
-                command = 'logout'
-            if command == 'logout':
-                transport.send(build_logout())
-                if transport.receive() is not None:
-                    raise ProtocolError(ErrorCode.INVALID_FIELD, 'Expected close after LOGOUT')
-                return
+        def display(message):
+            print(f'\n[{message.header["sender"]} -> {username}] '
+                  f'{message.payload.decode("utf-8")}', flush=True)
+
+        client = PrivateChatClient(transport, timeout=timeout, on_message=display,
+                                   on_disconnect=lambda: print('\nDisconnected.', flush=True))
+        try:
+            print(json.dumps({'users': client.users()}, ensure_ascii=False, indent=2))
+            print('Commands: /msg USER TEXT, /users (or Enter), /logout')
+            while True:
+                try:
+                    command = input('> ').strip()
+                except EOFError:
+                    command = '/logout'
+                try:
+                    if command in {'logout', '/logout'}:
+                        client.logout()
+                        return
+                    if command in {'', 'users', '/users'}:
+                        print(json.dumps({'users': client.users()}, ensure_ascii=False, indent=2))
+                    elif command.startswith('/msg '):
+                        recipient, separator, text = command[5:].partition(' ')
+                        if not separator or not text:
+                            print('Usage: /msg USER TEXT')
+                            continue
+                        ack = client.send_private(recipient, text)
+                        print(f'Accepted: {ack.header["message_id"]} (server acceptance; not a read receipt)')
+                    else:
+                        print('Commands: /msg USER TEXT, /users, /logout')
+                except LanLinkError as error:
+                    if isinstance(error, ProtocolError):
+                        raise
+                    print(f'Request failed: {error}')
+        finally:
+            client.close()
 
 
 def main(argv=None):
