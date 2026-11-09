@@ -61,7 +61,7 @@ required. All payloads are empty unless explicitly stated.
 | HELLO_ACK | S | ref_request_id, server_name ≤64, limits | empty |
 | AUTH | C | username | strict UTF-8 password, 1..256 bytes |
 | AUTH_OK | S | ref_request_id, username | empty |
-| USER_LIST | C/S | none | C empty; S JSON users object |
+| USER_LIST | C/S | C none; S ref_request_id | C empty; S JSON users object |
 | LOGOUT | C/S | reason? ≤128 | empty |
 | ERROR | S | code, message ≤256, ref_request_id?, field? ≤64, transfer_id? | empty |
 | CHAT_PUBLIC | C | none | strict UTF-8, 1..max_chat_bytes |
@@ -703,7 +703,12 @@ frames or client-forged server fields are rejected by the existing decoder and
 closed. Public chat remains unsupported.
 
 The CLI transfers receive ownership to a single background reader after AUTH_OK.
-It dispatches private messages to display callbacks and correlates CHAT_ACK/ERROR
-with pending request queues. USER_LIST requests are serialized because the existing
-USER_LIST response schema has no ref_request_id. EOF/shutdown wakes waiters and
+It dispatches private messages to display callbacks and correlates CHAT_ACK/ERROR/
+USER_LIST with pending request queues using `ref_request_id`. Each USER_LIST response
+must reference the original request's `request_id`; the empty client request schema
+is unchanged. Multiple list requests can be outstanding within the shared 64-request
+limit, and responses may arrive in any order. Unknown or completed references are
+protocol errors. A response timeout terminates the session and wakes every pending
+caller. This tightens the version 1 wire schema: old USER_LIST responses without a
+reference are rejected, so client and server must be upgraded together. EOF/shutdown wakes waiters and
 joins the reader. Both server and CLI require loopback access until TLS exists.

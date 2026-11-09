@@ -179,7 +179,7 @@ class TCPServer:
                 with self._lock:
                     users = [asdict(UserInfo(s.username, s.online, s.ip, s.port))
                              for s in sorted(self._users.values(), key=lambda s: s.username)]
-                transport.send(build_user_list(users))
+                transport.send(build_user_list(users, ref_request_id=message.header['request_id']))
                 continue
             elif message.type == MessageType.CHAT_PRIVATE:
                 code = self._route_private(username, message, transport)

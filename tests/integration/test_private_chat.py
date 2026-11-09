@@ -1,6 +1,7 @@
 """Stage 4A: real localhost private routing and asynchronous client reception."""
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+import json
 import queue
 import secrets
 import socket
@@ -12,10 +13,10 @@ import pytest
 
 from client.__main__ import authenticate, main as client_main, request_users
 from client.private_chat import PrivateChatClient
-from common.errors import ErrorCode, LanLinkError
+from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.models import Message, MessageType
-from common.protocol import (build_chat_private, build_chat_public,
-                             encode_message)
+from common.protocol import (build_chat_ack, build_chat_private, build_chat_public,
+                             build_error, build_user_list, encode_message)
 from server.app import TCPServer
 from server.auth import CredentialStore, save_user
 from tests.integration.test_auth import open_client, exchange_error
@@ -127,6 +128,140 @@ def test_self_message_and_user_list_reader_dispatch(accounts):
         assert ack.header['message_id'] == message.header['message_id']
         assert message.header['sender'] == 'alice'
         assert alice.users()[0]['username'] == 'alice'
+
+
+@pytest.mark.parametrize('public_api', [False, True], ids=['correlation', 'users-api'])
+def test_concurrent_user_lists_with_reversed_responses(accounts, monkeypatch, public_api):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        record = server.connections()[server.users()['alice'].connection_id]
+        original_send = record.transport.send
+        responses = []
+        pending_refs = set()
+        count = 8
+
+        def reverse_batch(message):
+            if message.type != MessageType.USER_LIST:
+                return original_send(message)
+            responses.append(message)
+            if len(responses) == count:
+                # No response is delivered until all eight requests are outstanding.
+                with alice._lock:
+                    pending_refs.update(alice._pending)
+                for response in reversed(responses):
+                    original_send(response)
+
+        monkeypatch.setattr(record.transport, 'send', reverse_batch)
+        requests = [build_user_list() for _ in range(count)]
+        with ThreadPoolExecutor(max_workers=count) as pool:
+            futures = [pool.submit(alice.users) if public_api else
+                       pool.submit(alice._request, request, MessageType.USER_LIST)
+                       for request in requests]
+            results = [future.result(timeout=4) for future in futures]
+        assert len(pending_refs) == count
+        assert {m.header['ref_request_id'] for m in responses} == pending_refs
+        if public_api:
+            assert all([u['username'] for u in users] == ['alice'] for users in results)
+        else:
+            assert [m.header['ref_request_id'] for m in results] == [
+                r.header['request_id'] for r in requests]
+            assert all(json.loads(m.payload)['users'][0]['username'] == 'alice' for m in results)
+        with alice._lock:
+            assert not alice._pending
+        assert alice._reader.is_alive()
+
+
+def test_user_list_timeout_wakes_concurrent_waiters_and_cleans_up(accounts, monkeypatch):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        alice.timeout = 2
+        record = server.connections()[server.users()['alice'].connection_id]
+        received = []
+        both_received = threading.Event()
+
+        def withhold_response(message):
+            received.append(message)
+            if len(received) == 2:
+                both_received.set()
+
+        monkeypatch.setattr(record.transport, 'send', withhold_response)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(alice.users) for _ in range(2)]
+            assert both_received.wait(timeout=1)
+            with alice._lock:
+                assert len(alice._pending) == 2
+            errors = []
+            for future in futures:
+                with pytest.raises((TimeoutError, EOFError)) as caught:
+                    future.result(timeout=3)
+                errors.append(caught.value)
+        assert any(isinstance(error, TimeoutError) for error in errors)
+        wait_until(lambda: not alice._reader.is_alive())
+        assert not alice._pending
+        wait_until(lambda: 'alice' not in server.users())
+        with pytest.raises(EOFError):
+            alice.users()  # Timed-out connections cannot be reused for a later request.
+
+
+@pytest.mark.parametrize('response', ['unknown-ref', 'missing-ref', 'wrong-type', 'error'])
+def test_user_list_unexpected_and_error_responses(accounts, monkeypatch, response):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        record = server.connections()[server.users()['alice'].connection_id]
+        original_send = record.transport.send
+
+        def send_response(message):
+            ref = message.header['ref_request_id']
+            if response == 'missing-ref':
+                header = dict(message.header)
+                del header['ref_request_id']
+                # Bypass the encoder only to inject a deliberately invalid peer frame.
+                data = json.dumps(header, separators=(',', ':')).encode()
+                record.socket.sendall(struct.pack('!I', len(data)) + data + message.payload)
+            elif response == 'unknown-ref':
+                original_send(build_user_list([], ref_request_id='unknown'))
+            elif response == 'wrong-type':
+                original_send(build_chat_ack(ref, 'message', 1))
+            else:
+                original_send(build_error(ErrorCode.NOT_AUTHENTICATED, 'Rejected', ref_request_id=ref))
+
+        monkeypatch.setattr(record.transport, 'send', send_response)
+        if response == 'error':
+            with pytest.raises(LanLinkError) as caught:
+                alice.users()
+            assert caught.value.code == ErrorCode.NOT_AUTHENTICATED
+            assert alice._reader.is_alive()
+        else:
+            with pytest.raises(ProtocolError) as caught:
+                alice.users()
+            expected = ErrorCode.MISSING_FIELD if response == 'missing-ref' else ErrorCode.INVALID_FIELD
+            assert caught.value.code == expected
+            wait_until(lambda: not alice._reader.is_alive())
+        assert not alice._pending
+
+
+def test_duplicate_user_list_response_is_rejected(accounts):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        request = build_user_list()
+        reply = alice._request(request, MessageType.USER_LIST)
+        record = server.connections()[server.users()['alice'].connection_id]
+        record.transport.send(reply)
+        wait_until(lambda: not alice._reader.is_alive())
+        with pytest.raises(ProtocolError, match='Unexpected server response'):
+            alice.users()
+        assert not alice._pending
+
+
+def test_synchronous_user_list_helper_rejects_mismatched_reference(accounts, monkeypatch):
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        _, transport = login(stack, server, accounts, 'alice')
+        record = server.connections()[server.users()['alice'].connection_id]
+        original_send = record.transport.send
+        monkeypatch.setattr(record.transport, 'send', lambda message:
+                            original_send(build_user_list([], ref_request_id='unknown')))
+        with pytest.raises(ProtocolError, match='does not match request'):
+            request_users(transport)
 
 
 def test_many_concurrent_routes_and_reply_writes_share_transport(accounts):

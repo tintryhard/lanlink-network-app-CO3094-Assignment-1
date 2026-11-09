@@ -180,7 +180,7 @@ def test_unicode_rejected_in_payload_and_builders():
     {'users':[{'username':'an','online':True,'ip':None,'port':True}]}, {'users':[], 'extra':1}])
 def test_user_list_shape(obj):
     p = json.dumps(obj).encode()
-    h = dict(version=1,type='USER_LIST',request_id='r',payload_length=len(p))
+    h = dict(version=1,type='USER_LIST',request_id='r',ref_request_id='request',payload_length=len(p))
     with pytest.raises(ProtocolError) as caught:
         validate_message(h,p,direction=Direction.SERVER_TO_CLIENT)
     assert caught.value.code == ErrorCode.BAD_PAYLOAD
@@ -254,6 +254,8 @@ def test_negotiated_payload_bounds_before_buffering():
     for kind,length in [('CHAT_PUBLIC',11),('FILE_CHUNK',21),('USER_LIST',31)]:
         h=dict(next(c['header'] for c in CASES['valid'] if c['header']['type']==kind))
         h['payload_length']=length
+        if kind == 'USER_LIST':
+            h['ref_request_id'] = 'request'
         data=raw(h)
         d=FrameDecoder(limits)
         with pytest.raises(ProtocolError) as caught:
@@ -266,15 +268,43 @@ def test_user_list_limits_and_values():
     from common.protocol import build_user_list
     users=[{'username':'an','online':True,'ip':'127.0.0.1','port':9000},
            {'username':'binh','online':False,'ip':'::1','port':None}]
-    msg=build_user_list(users)
+    msg=build_user_list(users,ref_request_id='request')
     limit=len(msg.payload)
     exact=replace(DEFAULT_LIMITS,max_user_list_bytes=limit)
     assert FrameDecoder(exact,Direction.SERVER_TO_CLIENT).feed(encode_message(msg,exact))==[msg]
     with pytest.raises(ProtocolError):
         encode_message(msg,replace(exact,max_user_list_bytes=limit-1))
-    with pytest.raises(ProtocolError):build_user_list([users[0],users[0]])
+    with pytest.raises(ProtocolError):build_user_list([users[0],users[0]],ref_request_id='request')
     with pytest.raises(ProtocolError):
         validate_message(msg.header,msg.payload,direction=Direction.CLIENT_TO_SERVER)
+
+
+def test_user_list_directional_correlation_schema():
+    from common.protocol import build_user_list
+    request = build_user_list()
+    assert not request.payload and 'ref_request_id' not in request.header
+    validate_message(request.header, request.payload, direction=Direction.CLIENT_TO_SERVER)
+    response = build_user_list([], ref_request_id=request.header['request_id'])
+    assert response.header['ref_request_id'] == request.header['request_id']
+    validate_message(response.header, response.payload, direction=Direction.SERVER_TO_CLIENT)
+    for direction in (Direction.ANY, Direction.SERVER_TO_CLIENT):
+        header = dict(response.header)
+        del header['ref_request_id']
+        with pytest.raises(ProtocolError) as caught:
+            validate_message(header, response.payload, direction=direction)
+        assert caught.value.code == ErrorCode.MISSING_FIELD
+    with pytest.raises(ProtocolError) as caught:
+        build_user_list([])
+    assert caught.value.code == ErrorCode.MISSING_FIELD
+    with pytest.raises(ProtocolError):
+        build_user_list(ref_request_id='not-allowed-on-request')
+
+
+@pytest.mark.parametrize('ref', ['', None, 42, 'invalid ref'])
+def test_user_list_invalid_response_reference(ref):
+    from common.protocol import build_user_list
+    with pytest.raises(ProtocolError):
+        build_user_list([], ref_request_id=ref)
 
 
 def test_builder_defaults_and_length_mismatch():

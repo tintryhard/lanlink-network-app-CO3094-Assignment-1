@@ -213,6 +213,8 @@ def _validate_header(h: dict, limits: ProtocolLimits, direction: Direction) -> M
     required = COMMON_FIELDS | set(required_text.split())
     optional = set(optional_text.split())
     if d == Direction.SERVER_TO_CLIENT:
+        if kind == MessageType.USER_LIST:
+            required.add("ref_request_id")
         if kind in {MessageType.CHAT_PUBLIC, MessageType.CHAT_PRIVATE}:
             required |= SERVER_FIELDS
         if kind == MessageType.FILE_OFFER:
@@ -560,10 +562,13 @@ def build_logout(reason: str | None = None) -> Message:
     return build_message(MessageType.LOGOUT, **({"reason": reason} if reason else {}))
 
 
-def build_user_list(users: list[dict] | None = None, *, limits=DEFAULT_LIMITS) -> Message:
+def build_user_list(users: list[dict] | None = None, *, ref_request_id: str | None = None,
+                    limits=DEFAULT_LIMITS) -> Message:
+    """Build an empty request, or a users response referencing its request ID."""
     payload = b"" if users is None else json.dumps({"users": users}, ensure_ascii=False,
                                                    separators=(",", ":"), sort_keys=True).encode("utf-8")
-    return build_message(MessageType.USER_LIST, payload, limits=limits)
+    return build_message(MessageType.USER_LIST, payload, limits=limits,
+                         **({"ref_request_id": ref_request_id} if ref_request_id is not None else {}))
 
 
 def build_chat_ack(ref_request_id: str, message_id: str, timestamp_ms: int) -> Message:

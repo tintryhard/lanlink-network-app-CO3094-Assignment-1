@@ -134,13 +134,21 @@ unsupported public chat returns ERROR(INVALID_FIELD) and closes it.
 
 After synchronous HELLO/AUTH, `PrivateChatClient` owns the connection's sole socket
 reader thread. The main CLI thread reads commands and sends requests. The reader
-prints incoming private messages through a callback and puts ACK/ERROR responses
-in bounded per-request queues keyed by ref_request_id. USER_LIST has no response
-reference field in the existing schema, so only one list request is allowed at a
-time. Main-thread requests never call receive once the reader starts. Callback
+prints incoming private messages through a callback and puts ACK/ERROR/USER_LIST
+responses in bounded per-request queues keyed by `ref_request_id`. Multiple
+USER_LIST requests may be outstanding on the same connection (within the shared
+64-request limit). Main-thread requests never call receive once the reader starts. Callback
 functions run on the reader and must return promptly without making synchronous
 client requests. Disconnects wake pending requests; close shuts down the socket
 and joins the reader. The socket is closed by its owning context manager.
+
+USER_LIST requests retain their empty payload and existing header schema. Each
+server response now requires `ref_request_id` equal to the original request's
+`request_id`; its own `request_id` remains independent. This is a wire compatibility
+change within protocol version 1: update client and server together. Older
+responses without the reference and responses with unknown or already-completed
+references are rejected. As with other requests, a response timeout closes the
+client session and wakes all pending callers; retry requires a new connection.
 
 Terminal output may interrupt the current prompt. A server disconnect is printed
 while input waits; press Enter to let the main input loop observe the failure.

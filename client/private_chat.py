@@ -1,8 +1,8 @@
 """Post-authentication client: one reader dispatches chat and request replies.
 
 The caller owns the socket. on_message runs on the reader thread and must return
-promptly; it must not make synchronous client requests. Only one USER_LIST may be
-outstanding because that existing response schema has no ref_request_id.
+promptly; it must not make synchronous client requests. Responses are correlated
+by ref_request_id, including concurrent USER_LIST requests.
 """
 import json
 import queue
@@ -22,7 +22,6 @@ class PrivateChatClient:
         self.on_disconnect = on_disconnect
         self._lock = threading.Lock()
         self._pending = {}
-        self._user_request = None
         self._error = None
         self._stopped = threading.Event()
         self._reader = threading.Thread(target=self._read_loop, name='lanlink-client-reader')
@@ -34,7 +33,6 @@ class PrivateChatClient:
                 self._error = error
             pending = list(self._pending.values())
             self._pending.clear()
-            self._user_request = None
             self._stopped.set()
         for inbox in pending:
             inbox.put_nowait(error)
@@ -52,11 +50,8 @@ class PrivateChatClient:
                     self.on_message(message)
                     continue
                 with self._lock:
-                    ref = (self._user_request if message.type == MessageType.USER_LIST
-                           else message.header.get('ref_request_id'))
+                    ref = message.header.get('ref_request_id')
                     inbox = self._pending.pop(ref, None)
-                    if ref == self._user_request:
-                        self._user_request = None
                 if inbox is None:
                     raise ProtocolError(ErrorCode.INVALID_FIELD, 'Unexpected server response')
                 inbox.put_nowait(message)
@@ -75,10 +70,6 @@ class PrivateChatClient:
                 raise self._error
             if len(self._pending) >= 64:
                 raise LanLinkError(ErrorCode.QUEUE_FULL)
-            if expected == MessageType.USER_LIST:
-                if self._user_request is not None:
-                    raise ValueError('A USER_LIST request is already outstanding')
-                self._user_request = ref
             self._pending[ref] = inbox
         try:
             self.transport.send(message)
@@ -87,7 +78,7 @@ class PrivateChatClient:
             except queue.Empty:
                 raise TimeoutError('Timed out waiting for server response') from None
         except (OSError, EOFError):
-            self.close()  # Avoid misattributing a late USER_LIST to a later request.
+            self.close()  # A timeout or transport failure terminates the session.
             raise
         if isinstance(reply, BaseException):
             raise reply

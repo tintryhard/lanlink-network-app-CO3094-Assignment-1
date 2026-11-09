@@ -45,10 +45,13 @@ def authenticate(transport: SocketTransport, username: str, password: str):
 
 
 def request_users(transport):
-    transport.send(build_user_list())
+    request = build_user_list()
+    transport.send(request)
     reply = transport.receive()
     if reply is None:
         raise EOFError('Server disconnected before USER_LIST')
+    if reply.header.get('ref_request_id') != request.header['request_id']:
+        raise ProtocolError(ErrorCode.INVALID_FIELD, 'USER_LIST response does not match request')
     if reply.type == MessageType.ERROR:
         raise LanLinkError(reply.header['code'])
     if reply.type != MessageType.USER_LIST:
