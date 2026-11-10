@@ -298,8 +298,8 @@ sequenceDiagram
     participant S as Server
     participant R as Clients
     C->>S: CHAT_PUBLIC
-    S->>C: CHAT_ACK (accepted)
-    S->>R: CHAT_PUBLIC (stamped sender/id/time)
+    S->>R: CHAT_PUBLIC (same stamped sender/id/time; no sender echo)
+    S->>C: CHAT_ACK (accepted; best-effort attempts complete)
 ```
 
 ### Private chat with ACK
@@ -671,7 +671,7 @@ The current server runs HELLO -> AUTH -> authenticated USER_LIST/LOGOUT over
 localhost TCP. It uses the existing AUTH/AUTH_OK/ERROR/USER_LIST/LOGOUT schemas.
 TLS in the earlier design diagrams remains planned. Credentials are loaded by
 `server.auth` from version 1 salted PBKDF2 records; the runtime enforces a loopback
-bind (always required as of Stage 4A). Stage 4A adds private chat dispatch;
+bind (always required as of Stage 4A). Stages 4A/4B add private/public chat dispatch;
 file/discovery dispatch remains unimplemented.
 
 AUTH_FAILED covers wrong passwords and unknown usernames. ALREADY_LOGGED_IN
@@ -700,10 +700,10 @@ waiting or sending. An offline/unknown account returns RECIPIENT_OFFLINE; failed
 forward writes return CONNECTION_LOST and shut down the recipient socket. Both
 errors reference the original request and preserve the sender session. Invalid
 frames or client-forged server fields are rejected by the existing decoder and
-closed. Public chat remains unsupported.
+closed. Public chat is added by Stage 4B below.
 
 The CLI transfers receive ownership to a single background reader after AUTH_OK.
-It dispatches private messages to display callbacks and correlates CHAT_ACK/ERROR/
+It dispatches private/public messages to display callbacks and correlates CHAT_ACK/ERROR/
 USER_LIST with pending request queues using `ref_request_id`. Each USER_LIST response
 must reference the original request's `request_id`; the empty client request schema
 is unchanged. Multiple list requests can be outstanding within the shared 64-request
@@ -722,3 +722,35 @@ introduced. Unknown references and mismatched response types remain fatal. A dae
 to the CLI queue, which also receives disconnect notifications, so the CLI exits
 without waiting for another input line. Both server and CLI require loopback access
 until TLS exists.
+
+## Stage 4B public-chat runtime
+
+Only authenticated clients may send CHAT_PUBLIC. The server snapshots online
+authenticated sessions other than the sender from `_users`/`_connections`, creates
+one message_id and timestamp_ms, and forwards the same stamped message to each
+eligible recipient. It waits for the existing auth_ready event and rechecks the
+session/connection before using that connection's sole SocketTransport/send lock.
+No registry lock is held during event waits or socket writes. A logout/replacement
+login invalidates the old snapshot entry; a new login receives no earlier messages.
+
+Each recipient write is independent. On a socket failure, the server shuts down
+that recipient to trigger worker/session cleanup and continues with the others.
+After the attempts it sends CHAT_ACK(status="accepted") to the sender, referencing
+the original request_id and the broadcast message_id/timestamp_ms. For public chat,
+accepted means server acceptance and best-effort attempts, including zero eligible
+recipients and partial/all recipient failures. It does not guarantee delivery or
+reading. The existing ACK schema reports no recipient counts. Partial failures
+produce no additional ERROR and cannot roll back already forwarded copies. A
+sender disconnect or missing ACK does not imply that no recipient received a copy.
+
+There is no public sender echo, offline storage, automatic retry or deduplication.
+Concurrent broadcasts may be observed in different orders by different recipients;
+send locks preserve complete frames. Sequential blocking writes can delay the ACK
+and later recipients until an earlier socket write or auth_ready wait times out.
+The existing client request timeout policy still terminates a session on timeout.
+
+The client keeps its single reader, dispatching CHAT_PUBLIC through the existing
+on_message callback and correlating the ACK through `_pending`. `send_public(text)`
+and CLI `/all TEXT` send broadcasts; `/msg USER TEXT` continues to send privately.
+Public CLI output uses `[sender -> all]`. Transport, protocol schemas and private
+chat error/ACK semantics are unchanged by this stage.

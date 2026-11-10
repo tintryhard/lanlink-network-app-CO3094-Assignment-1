@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.models import Message, MessageType
-from common.protocol import build_chat_private, build_logout, build_user_list
+from common.protocol import build_chat_private, build_chat_public, build_logout, build_user_list
 from common.transport import SocketTransport
 
 
@@ -71,7 +71,7 @@ class PrivateChatClient:
                     continue  # Idle reader; decoder retains any incomplete frame.
                 if message is None:
                     raise EOFError('Server disconnected')
-                if message.type == MessageType.CHAT_PRIVATE:
+                if message.type in {MessageType.CHAT_PRIVATE, MessageType.CHAT_PUBLIC}:
                     self.on_message(message)
                     continue
                 with self._lock:
@@ -125,6 +125,9 @@ class PrivateChatClient:
 
     def send_private(self, recipient: str, text: str) -> Message:
         return self._request(build_chat_private(recipient, text), MessageType.CHAT_ACK)
+
+    def send_public(self, text: str) -> Message:
+        return self._request(build_chat_public(text), MessageType.CHAT_ACK)
 
     def users(self) -> list[dict[str, Any]]:
         reply = self._request(build_user_list(), MessageType.USER_LIST)

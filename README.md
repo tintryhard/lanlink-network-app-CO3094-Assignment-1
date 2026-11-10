@@ -2,8 +2,8 @@
 
 Course project skeleton for Python, TCP/UDP sockets, TLS and PySide6.
 
-**Status:** Stage 4A supports concurrent TCP handshakes, local password
-verification, authenticated user lists, private chat and logout. The server retains the bounded
+**Status:** Stage 4B supports concurrent TCP handshakes, local password
+verification, authenticated user lists, private/public chat and logout. The server retains the bounded
 thread-per-client architecture. Existing file-engine and file-widget components
 are not integrated into a complete application.
 
@@ -40,7 +40,7 @@ Install dependencies:
 python -m pip install -r requirements-dev.txt
 ```
 
-## Stage 4A: Local authentication and private chat
+## Stage 4B: Local authentication, private and public chat
 
 Create accounts interactively (password input is hidden):
 
@@ -66,7 +66,9 @@ python -m client --host 127.0.0.1 --port 5000 --username bob
 
 The client logs in, prints the current user list, and remains connected. In
 Alice's terminal, send `/msg bob Hello Bob`; in Bob's, reply `/msg alice Hi Alice`.
-Private messages appear even while the recipient waits at the input prompt.
+Use `/all Hello everyone` to broadcast to other authenticated online users.
+Private and public messages appear even while the recipient waits at the input prompt;
+public messages display as `[sender -> all]`.
 Use `/users` (or Enter) to refresh users and `/logout` (or `logout`) to leave.
 EOF on terminal input logs out. Usernames and message text preserve their case.
 User lists are requested, not broadcast. They contain authenticated users only,
@@ -96,7 +98,7 @@ without `--users` preserves handshake functionality but rejects every AUTH.
   names from wrong passwords. Three credential failures close that connection;
   failed attempts can otherwise be retried on the same connection.
 - Duplicate active names and repeated AUTH return ERROR(ALREADY_LOGGED_IN).
-  Repeated AUTH preserves the original session. USER_LIST/LOGOUT/CHAT_PRIVATE before AUTH
+  Repeated AUTH preserves the original session. USER_LIST/LOGOUT/CHAT_PRIVATE/CHAT_PUBLIC before AUTH
   return ERROR(NOT_AUTHENTICATED); unsupported operations are rejected and closed.
   Errors after HELLO reference the rejected request ID. AUTH before HELLO gets
   ERROR(INVALID_FIELD) followed by close; corrupt frames are closed directly.
@@ -108,7 +110,7 @@ without `--users` preserves handshake functionality but rejects every AUTH.
 
 The default connection cap is 64; excess connections are closed. There is no
 cross-connection rate limiter, account registration API, persistence of online
-state, public broadcast, file transfer, UDP discovery or Qt integration in Stage 4A.
+state, file transfer, UDP discovery or Qt integration in Stage 4B.
 
 ### Private routing and client workers
 
@@ -129,13 +131,32 @@ recipient did not receive the message; there is no automatic retry/deduplication
 A missing active recipient (including an unknown account) returns
 ERROR(RECIPIENT_OFFLINE). Forward-write failure returns ERROR(CONNECTION_LOST)
 and shuts down the failed recipient socket to trigger session cleanup. Business
-errors preserve the sender session. Invalid schema/framing closes that connection;
-unsupported public chat returns ERROR(INVALID_FIELD) and closes it.
+errors preserve the sender session. Invalid schema/framing closes that connection.
+
+### Public broadcast and ACK semantics
+
+CHAT_PUBLIC uses the existing codec and schema. The server snapshots authenticated
+online sessions except the sender, stamps one message ID and timestamp for the
+whole broadcast, waits for each recipient's AUTH_OK, and rechecks session identity
+before writing through its registered transport/send lock. Newly logged-in or
+replacement sessions are not added to an in-progress broadcast. No registry lock
+is held while waiting or sending.
+
+The server attempts each recipient independently. A failed write shuts down that
+recipient's socket for cleanup and does not stop attempts to other recipients.
+After the attempts, CHAT_ACK references the original request ID and shares the
+broadcast message ID and timestamp. `accepted` means server acceptance and a
+best-effort broadcast attempt, **not delivery to every recipient or a read receipt**.
+It is also returned when there are zero recipients or all recipient writes fail.
+The existing ACK has no delivery counts; partial failures do not produce a second
+ERROR or roll back messages already sent. There is no offline storage, retry,
+deduplication or global ordering across simultaneous senders. Losing the sender's
+connection before its ACK does not undo completed recipient writes.
 
 After synchronous HELLO/AUTH, `PrivateChatClient` owns the connection's sole socket
 reader thread. A daemon input worker reads commands; the main CLI thread handles
 commands and disconnect notifications through a queue and sends requests. The reader
-prints incoming private messages through a callback and puts ACK/ERROR/USER_LIST
+prints incoming private/public messages through a callback and puts ACK/ERROR/USER_LIST
 responses in bounded per-request queues keyed by `ref_request_id`. Multiple
 USER_LIST requests may be outstanding on the same connection (within the shared
 64-request limit). Main-thread requests never call receive once the reader starts. Callback
@@ -178,9 +199,9 @@ on client requests, so incoming chat alone does not reset the server idle deadli
 ### Tests
 
 ```bash
-# Stage 4A private chat and CLI tests
-python -m pytest -q tests/integration/test_private_chat.py
-# Stage 1/2/3/4A and existing non-Qt regressions
+# Stage 4A/4B chat and CLI tests
+python -m pytest -q tests/integration/test_private_chat.py tests/integration/test_public_chat.py
+# Stage 1/2/3/4A/4B and existing non-Qt regressions
 python -m pytest -q tests/integration tests/protocol tests/transfer tests/scripts
 ```
 
@@ -189,8 +210,11 @@ files in temporary directories. They cover 20 simultaneous authenticated users,
 duplicate races, user-list metadata, unauthorized sequences, logout, disconnect,
 timeout and shutdown cleanup. Private-chat tests also cover metadata/ACK matching,
 third-party isolation, offline recipients, concurrent forwarding, authentication
-reply ordering and unsolicited reception during CLI input. Stage 1–3 tests remain
-in place.
+reply ordering and unsolicited reception during CLI input. Public-chat tests cover
+authenticated audiences, no sender echo, concurrent mixed traffic, maximum UTF-8
+payloads, partial/all recipient failures, snapshot/login races and in-flight shutdown.
+Broadcasts use sequential blocking writes bounded by each socket's timeout; a slow
+recipient can delay later recipients and the sender's ACK. Stage 1–3 tests remain in place.
 
 ## Workflow
 1. Agree `docs/protocol.md` and module interfaces first.

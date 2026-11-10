@@ -118,11 +118,16 @@ def test_client_cannot_forge_server_identity(accounts, field, value):
             bob.receive()
 
 
-def test_public_chat_remains_unsupported(accounts):
+def test_public_chat_accepted_without_recipients(accounts):
     with running(credentials=accounts[0]) as server, ExitStack() as stack:
         _, alice = login(stack, server, accounts, 'alice')
-        exchange_error(alice, build_chat_public('not supported'), ErrorCode.INVALID_FIELD)
-        assert alice.receive() is None
+        request = build_chat_public('no recipients')
+        alice.send(request)
+        reply = alice.receive()
+        assert reply.type == MessageType.CHAT_ACK
+        assert reply.header['ref_request_id'] == request.header['request_id']
+        assert reply.header['status'] == 'accepted'
+        assert request_users(alice)[0]['username'] == 'alice'
 
 
 def test_self_message_and_user_list_reader_dispatch(accounts):

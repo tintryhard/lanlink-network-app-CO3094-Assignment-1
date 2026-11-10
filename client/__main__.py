@@ -1,4 +1,4 @@
-"""TCP handshake, localhost login and private chat demonstration."""
+"""TCP handshake, localhost login and private/public chat demonstration."""
 import argparse
 import getpass
 import ipaddress
@@ -83,12 +83,15 @@ def login_cli(host: str, port: int, username: str, timeout: float) -> None:
     with _connect_local(host, port, timeout) as connection:
         if not ipaddress.ip_address(connection.getpeername()[0]).is_loopback:
             raise ValueError('Password login is restricted to localhost until TLS is implemented')
+        
         transport = SocketTransport(connection, direction=Direction.SERVER_TO_CLIENT)
         initiate_hello(transport)
         authenticate(transport, username, getpass.getpass('Password: '))
         print(f'Authenticated as {username}')
+        
         def display(message: Message) -> None:
-            print(f'\n[{message.header["sender"]} -> {username}] '
+            recipient = 'all' if message.type == MessageType.CHAT_PUBLIC else username
+            print(f'\n[{message.header["sender"]} -> {recipient}] '
                   f'{message.payload.decode("utf-8")}', flush=True)
 
         commands: queue.Queue[str | BaseException | None] = queue.Queue()
@@ -122,7 +125,7 @@ def login_cli(host: str, port: int, username: str, timeout: float) -> None:
                                    on_disconnect=notify_disconnect)
         try:
             print(json.dumps({'users': client.users()}, ensure_ascii=False, indent=2))
-            print('Commands: /msg USER TEXT, /users (or Enter), /logout')
+            print('Commands: /msg USER TEXT, /all TEXT, /users (or Enter), /logout')
             # Only this daemon reads stdin. Raw reads avoid a buffered-stdin lock
             # preventing interpreter exit while it waits for an unfinished line.
             threading.Thread(target=read_commands, name='lanlink-cli-input', daemon=True).start()
@@ -146,9 +149,14 @@ def login_cli(host: str, port: int, username: str, timeout: float) -> None:
                             print('Usage: /msg USER TEXT')
                             continue
                         ack = client.send_private(recipient, text)
-                        print(f'Accepted: {ack.header["message_id"]} (server acceptance; not a read receipt)')
+                        print(f'Accepted: {ack.header["message_id"]}')
+                    elif command == '/all':
+                        print('Usage: /all TEXT')
+                    elif command.startswith('/all '):
+                        ack = client.send_public(command[5:])
+                        print(f'Accepted: {ack.header["message_id"]}')
                     else:
-                        print('Commands: /msg USER TEXT, /users, /logout')
+                        print('Commands: /msg USER TEXT, /all TEXT, /users, /logout')
                 except LanLinkError as error:
                     if isinstance(error, ProtocolError) and connection.fileno() == -1:
                         raise

@@ -1,4 +1,4 @@
-"""Bounded thread-per-client TCP server; HELLO, authentication and private messaging."""
+"""Bounded thread-per-client TCP server; HELLO, authentication and chat routing."""
 from dataclasses import asdict, dataclass, field, replace
 import ipaddress
 import math
@@ -188,14 +188,49 @@ class TCPServer:
                 code = self._route_private(username, message, transport)
                 if code is None:
                     continue
+            elif message.type == MessageType.CHAT_PUBLIC:
+                self._route_public(username, message, transport)
+                continue
             elif message.type == MessageType.LOGOUT:
                 return
             else:
                 code = ErrorCode.INVALID_FIELD
             transport.send(build_error(code, user_message(code),
                                        ref_request_id=message.header['request_id']))
-            if failures >= 3 or message.type not in {MessageType.AUTH, MessageType.USER_LIST, MessageType.LOGOUT, MessageType.CHAT_PRIVATE}:
+            if failures >= 3 or message.type not in {MessageType.AUTH, MessageType.USER_LIST, MessageType.LOGOUT, MessageType.CHAT_PRIVATE, MessageType.CHAT_PUBLIC}:
                 return
+
+    def _route_public(self, username: str, message: Message,
+                      sender_transport: SocketTransport) -> None:
+        with self._lock:
+            targets = [(session, self._connections.get(session.connection_id))
+                       for session in self._users.values()
+                       if session.online and session.username != username]
+        message_id = uuid4().hex
+        timestamp_ms = int(time.time() * 1000)
+        forwarded = build_message(MessageType.CHAT_PUBLIC, message.payload,
+                                  sender=username, message_id=message_id, timestamp_ms=timestamp_ms)
+        for session, target in targets:
+            if target is None or not target.auth_ready.wait(self.idle_timeout):
+                continue
+            # Recheck the snapshot after waiting; never send to a replacement
+            # login or a session removed by disconnect/shutdown.
+            with self._lock:
+                if (self._stopping.is_set() or self._users.get(session.username) != session or
+                        self._connections.get(session.connection_id) is not target or
+                        target.state != ConnectionState.AUTHENTICATED):
+                    continue
+            try:
+                target.transport.send(forwarded)
+            except OSError:
+                # A failed/partial write invalidates only this recipient stream.
+                try:
+                    target.socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+        # Best-effort acceptance even with zero recipients or partial/all write
+        # failures. The existing ACK schema carries no delivery count/receipt.
+        sender_transport.send(build_chat_ack(message.header['request_id'], message_id, timestamp_ms))
 
     def _route_private(self, username: str, message: Message,
                        sender_transport: SocketTransport) -> ErrorCode | None:
