@@ -270,8 +270,9 @@ stateDiagram-v2
     VERIFYING --> FAILED
 ```
 
-Terminal states have no exits. A's server/transfers.py should import the same
-ALLOWED_TRANSITIONS/check_transition. Receiver completes after totals/hash,
+Terminal states have no exits. Stage 5A server routing imports the shared
+TransferStatus/check_transition; later content stages follow the rest of this graph.
+Receiver completes after totals/hash,
 fsync/rename and creation of FILE_RESULT. Sender completes only on a valid
 successful FILE_RESULT, never on FILE_END.
 
@@ -394,8 +395,8 @@ sequenceDiagram
 
 Receiver disconnect is symmetric: the relay must send the sender
 `ERROR(CONNECTION_LOST, transfer_id)`. Both engines consume that ERROR, terminate
-once and release resources. A's router/transport are still placeholders; these
-relay actions are requirements, not observed server behavior.
+once and release resources. Stage 5A implements the relay disconnect notification
+for negotiation sessions; network integration of the content engines remains planned.
 
 ### UDP discovery
 ```mermaid
@@ -672,7 +673,7 @@ localhost TCP. It uses the existing AUTH/AUTH_OK/ERROR/USER_LIST/LOGOUT schemas.
 TLS in the earlier design diagrams remains planned. Credentials are loaded by
 `server.auth` from version 1 salted PBKDF2 records; the runtime enforces a loopback
 bind (always required as of Stage 4A). Stages 4A/4B add private/public chat dispatch;
-file/discovery dispatch remains unimplemented.
+Stage 5A adds file negotiation below. File-content/discovery dispatch remains unimplemented.
 
 AUTH_FAILED covers wrong passwords and unknown usernames. ALREADY_LOGGED_IN
 covers both duplicate active names and AUTH on an already authenticated socket.
@@ -754,3 +755,74 @@ on_message callback and correlating the ACK through `_pending`. `send_public(tex
 and CLI `/all TEXT` send broadcasts; `/msg USER TEXT` continues to send privately.
 Public CLI output uses `[sender -> all]`. Transport, protocol schemas and private
 chat error/ACK semantics are unchanged by this stage.
+
+## Stage 5A file-negotiation runtime
+
+Only FILE_OFFER, FILE_ACCEPT and FILE_REJECT are routed. The existing schemas,
+message builders, direction validation and limits are unchanged (protocol v1).
+FILE_CHUNK/FILE_END/FILE_RESULT/FILE_CANCEL and content-engine integration remain
+outside this stage; unsupported operations retain the existing ERROR/close policy.
+
+```mermaid
+sequenceDiagram
+    participant A as Authenticated sender
+    participant S as Server
+    participant B as Authenticated recipient
+    A->>S: FILE_OFFER (unique transfer_id, metadata)
+    S->>B: FILE_OFFER (original fields plus authenticated sender)
+    Note over A,B: Both clients remain available for chat/users/input
+    B->>S: FILE_ACCEPT or FILE_REJECT (transfer_id)
+    S->>A: Decision (unchanged)
+    S->>B: Decision echo (unchanged, after successful forward)
+    Note over A,B: Acceptance is negotiation only; no content transmitted
+```
+
+Offers get no separate success ACK. The local offer API returns the generated
+transfer ID after sending metadata; offline/invalid operations are reported
+asynchronously. Offers and decisions preserve their original request_id. Action
+ERROR responses include ref_request_id and transfer_id; timeout/peer-loss ERROR
+notifications include transfer_id without a request reference. The client reader
+puts all three negotiation types and transfer-specific ERROR into transfer_events,
+independently of the existing ref_request_id request queues. It never waits for a
+human decision, hashes a file, creates an output file, or makes a synchronous
+request on the reader thread. CLI events share the main command queue; direct API
+callers drain the default bounded 128-event queue. Overflow closes the connection
+with QUEUE_FULL rather than dropping state. Ordinary transfer ERROR events preserve
+the connection; transport/framing failures still close it immediately.
+
+Server records bind the immutable validated offer to both original connection IDs,
+a TransferStatus and a monotonic deadline. The existing registry lock protects
+records and ID admission. A per-transfer lock serializes forwarding, decisions and
+cleanup. No socket I/O or session-lock acquisition occurs while holding the registry
+lock. Every send uses the sole registered SocketTransport/send lock, with auth_ready
+ensuring AUTH_OK comes first. Replacement logins cannot claim an earlier session.
+Only the recorded recipient may decide while OFFERED. Self-offers are INVALID_FIELD;
+offline accounts are RECIPIENT_OFFLINE, unknown IDs TRANSFER_UNKNOWN, wrong owners,
+duplicate offers and invalid states TRANSFER_STATE. Metadata validation is performed
+by the existing codec, including size/hash/chunk-size/safe-filename checks and
+rejection of client-supplied sender identity.
+
+OFFERED -> ACCEPTED on acceptance; OFFERED -> REJECTED on rejection. Rejected
+records are removed after the decision is committed. Accepted records stay at
+ACCEPTED and expire without any content transmission. Both active states can become
+FAILED on timeout or peer/write failure, then are removed. Surviving participants
+receive ERROR(TIMEOUT or CONNECTION_LOST, transfer_id). Forward failure shuts down
+the damaged socket; other transfers/connections continue. During shutdown sockets
+are interrupted, registered workers finish cleanup and are joined, and the registry
+is cleared. Successful writes/echoes do not guarantee peer consumption; disconnects
+can leave only one peer observing a decision, with no retry or rollback.
+
+The server --transfer-timeout option defaults to 60 seconds per offered/accepted
+phase, resetting on acceptance. Existing connection workers schedule receive
+wakeups at the earlier idle/transfer deadline, preserving FrameDecoder's partial
+input and the original whole-request idle deadline. No per-transfer timer threads
+are created. Deadline work is cooperative with existing bounded blocking writes;
+a stalled write can delay cleanup. Connection idle timeout remains independent
+and may close a quiet session before its transfer deadline.
+
+Each originating connection can register 64 offers total. Its ID tombstones remain
+until connection cleanup to prevent reusing rejected/expired IDs without unbounded
+history; QUEUE_FULL rejects further offers. Active sessions are bounded by this
+quota and max_clients. There is no persistence, offline delivery, resume, verified
+completion, or network content pumping in Stage 5A. The existing standalone
+transfer engine tests continue to exercise their separate pre-existing APIs.

@@ -2,8 +2,9 @@
 
 Course project skeleton for Python, TCP/UDP sockets, TLS and PySide6.
 
-**Status:** Stage 4B supports concurrent TCP handshakes, local password
-verification, authenticated user lists, private/public chat and logout. The server retains the bounded
+**Status:** Stage 5A supports concurrent TCP handshakes, local password
+verification, authenticated user lists, private/public chat, file offer/accept/reject
+negotiation and logout. No file contents are transmitted. The server retains the bounded
 thread-per-client architecture. Existing file-engine and file-widget components
 are not integrated into a complete application.
 
@@ -40,7 +41,7 @@ Install dependencies:
 python -m pip install -r requirements-dev.txt
 ```
 
-## Stage 4B: Local authentication, private and public chat
+## Stage 5A: Local authentication, chat and file negotiation
 
 Create accounts interactively (password input is hidden):
 
@@ -110,7 +111,69 @@ without `--users` preserves handshake functionality but rejects every AUTH.
 
 The default connection cap is 64; excess connections are closed. There is no
 cross-connection rate limiter, account registration API, persistence of online
-state, file transfer, UDP discovery or Qt integration in Stage 4B.
+state, file-content transmission, UDP discovery or Qt integration in Stage 5A.
+
+### File negotiation (Stage 5A)
+
+In Alice's terminal:
+
+```text
+/offer bob /absolute/path/to/report.pdf
+```
+
+The path is the rest of the command, so spaces are allowed without quotes. The
+existing `transfer.sender.inspect_file` computes size/SHA-256 locally and checks
+the filename/source. Only metadata goes onto the socket. `Offer sent: ID` means
+the local send succeeded; it is not a server ACK or a recipient decision. Bob sees
+the offer with its unique transfer ID and explicitly chooses:
+
+```text
+/accept ID
+/reject ID No thanks
+```
+
+Use the actual 32-character ID shown by the CLI. Rejection reasons are optional.
+The server forwards the decision to Alice and echoes it to Bob after a successful
+forward. `FILE_ACCEPT` means negotiation accepted, never file delivery/completion;
+no destination file is created and no chunk/end/result is sent in this stage.
+Incoming offers and transfer errors go into a queue, not an input prompt on the
+socket reader. Chat and `/users` remain available while waiting for a decision.
+Hashing runs on the CLI command thread, so a large source can delay the next command
+while the reader continues receiving messages.
+
+The server registry binds each transfer to the original sender/recipient
+connection IDs. Only that recipient may decide, only once while `OFFERED`.
+Acceptance changes the state to `ACCEPTED`; rejection changes it to `REJECTED` and
+removes it. Timeout/disconnect changes an active transfer to `FAILED` and removes
+it, notifying surviving peers via `ERROR` with `transfer_id`. A replacement login
+cannot inherit an old transfer. Unknown IDs produce `TRANSFER_UNKNOWN`; duplicate
+offers or invalid owners/states produce `TRANSFER_STATE`. Offline recipients
+produce `RECIPIENT_OFFLINE`; self-offers are rejected with `INVALID_FIELD`.
+Schema/metadata validation is still owned by `common.protocol`; malformed ingress
+closes the offending connection.
+
+`--transfer-timeout 60` bounds each offered/accepted phase, resetting on acceptance.
+Accepted sessions are deliberately retained until that deadline or disconnect for
+the Stage 5A boundary; there is no transition to `TRANSFERRING` or `COMPLETED`.
+The existing idle deadline (45 seconds by default) still applies independently and
+can disconnect a quiet peer sooner. Existing connection workers wake for transfer
+deadlines without new timer threads or discarding partial frames. Blocking socket
+writes can delay deadline processing until their existing socket timeout.
+
+At most 64 registered offers may originate from one connection over its lifetime,
+including rejected/expired offers. This bounds both active records and replay-ID
+history. A 65th returns `QUEUE_FULL`; reconnect to start a fresh quota. IDs cannot
+be reused while their originating connection remains registered. Records are
+in memory only. No offline offers, history replay, persistent transfers, or retries
+are provided. Direct Python clients must drain `client.transfer_events`; its default
+capacity is 128, and overflow closes that connection rather than losing state.
+Transfer errors are asynchronous and do not close a healthy connection. Existing
+chat/user-list request timeouts still close the client connection as before.
+
+The wire schemas and protocol version are unchanged. Offer and decision routing
+preserve their original `request_id`; transfer notifications are identified by
+`transfer_id`, independently of synchronous chat/user-list `_pending` requests.
+Clients must understand the new file-event dispatch before using this stage.
 
 ### Private routing and client workers
 
@@ -201,8 +264,12 @@ on client requests, so incoming chat alone does not reset the server idle deadli
 ```bash
 # Stage 4A/4B chat and CLI tests
 python -m pytest -q tests/integration/test_private_chat.py tests/integration/test_public_chat.py
-# Stage 1/2/3/4A/4B and existing non-Qt regressions
+# Stage 5A metadata negotiation and CLI tests
+python -m pytest -q tests/integration/test_file_negotiation.py
+# Stage 1 through 5A and existing non-Qt regressions
 python -m pytest -q tests/integration tests/protocol tests/transfer tests/scripts
+# All existing tests, including offscreen Qt widgets
+python -m pytest -q
 ```
 
 The integration tests use real localhost sockets and generated passwords/hash
@@ -215,6 +282,10 @@ authenticated audiences, no sender echo, concurrent mixed traffic, maximum UTF-8
 payloads, partial/all recipient failures, snapshot/login races and in-flight shutdown.
 Broadcasts use sequential blocking writes bounded by each socket's timeout; a slow
 recipient can delay later recipients and the sender's ACK. Stage 1–3 tests remain in place.
+File-negotiation tests cover acceptance/rejection, metadata and identity checks,
+concurrent offers/decisions, duplicate IDs, invalid owners/states, offline users,
+timeouts with partial TCP input, logout/relogin cleanup, write/echo failures,
+bounded queues/history, authentication ordering, CLI input and worker shutdown.
 
 ## Workflow
 1. Agree `docs/protocol.md` and module interfaces first.

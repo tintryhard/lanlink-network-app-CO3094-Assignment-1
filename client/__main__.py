@@ -94,7 +94,7 @@ def login_cli(host: str, port: int, username: str, timeout: float) -> None:
             print(f'\n[{message.header["sender"]} -> {recipient}] '
                   f'{message.payload.decode("utf-8")}', flush=True)
 
-        commands: queue.Queue[str | BaseException | None] = queue.Queue()
+        commands: queue.Queue[str | Message | BaseException | None] = queue.Queue()
         disconnected = threading.Event()
         read_next = threading.Event()
 
@@ -122,20 +122,34 @@ def login_cli(host: str, port: int, username: str, timeout: float) -> None:
                 commands.put_nowait(command)
 
         client = PrivateChatClient(transport, timeout=timeout, on_message=display,
-                                   on_disconnect=notify_disconnect)
+                                   on_disconnect=notify_disconnect, transfer_events=commands)
         try:
             print(json.dumps({'users': client.users()}, ensure_ascii=False, indent=2))
-            print('Commands: /msg USER TEXT, /all TEXT, /users (or Enter), /logout')
+            help_text = ('Commands: /msg USER TEXT, /all TEXT, /offer USER PATH, '
+                         '/accept ID, /reject ID [REASON], /users (or Enter), /logout')
+            print(help_text)
             # Only this daemon reads stdin. Raw reads avoid a buffered-stdin lock
             # preventing interpreter exit while it waits for an unfinished line.
             threading.Thread(target=read_commands, name='lanlink-cli-input', daemon=True).start()
+            read_next.set()
+            
             while not disconnected.is_set():
-                read_next.set()
                 command = commands.get()
                 if command is None or disconnected.is_set():
                     return
                 if isinstance(command, BaseException):
                     raise command
+                if isinstance(command, Message):
+                    transfer_id = command.header['transfer_id']
+                    if command.type == MessageType.FILE_OFFER:
+                        print(f'\nFile offer {transfer_id} from {command.header["sender"]}: '
+                              f'{command.header["filename"]} ({command.header["size"]} bytes). '
+                              f'Use /accept {transfer_id} or /reject {transfer_id}.', flush=True)
+                    elif command.type == MessageType.ERROR:
+                        print(f'\nFile {transfer_id}: {LanLinkError(command.header["code"])}', flush=True)
+                    else:
+                        print(f'\nFile {transfer_id}: {command.type.value}', flush=True)
+                    continue
                 command = command.strip()
                 try:
                     if command in {'logout', '/logout'}:
@@ -155,14 +169,37 @@ def login_cli(host: str, port: int, username: str, timeout: float) -> None:
                     elif command.startswith('/all '):
                         ack = client.send_public(command[5:])
                         print(f'Accepted: {ack.header["message_id"]}')
+                    elif command == '/offer' or command.startswith('/offer '):
+                        recipient, separator, path = command[7:].partition(' ')
+                        if not recipient or not separator or not path:
+                            print('Usage: /offer USER PATH')
+                            continue
+                        transfer_id = client.offer_file(recipient, path)
+                        print(f'Offer sent: {transfer_id} (awaiting recipient decision)')
+                    elif command == '/accept' or command.startswith('/accept '):
+                        transfer_id = command[8:].strip()
+                        if not transfer_id:
+                            print('Usage: /accept ID')
+                            continue
+                        client.accept_file(transfer_id)
+                    elif command == '/reject' or command.startswith('/reject '):
+                        transfer_id, _, reason = command[8:].partition(' ')
+                        if not transfer_id:
+                            print('Usage: /reject ID [REASON]')
+                            continue
+                        client.reject_file(transfer_id, reason or None)
                     else:
-                        print('Commands: /msg USER TEXT, /all TEXT, /users, /logout')
+                        print(help_text)
                 except LanLinkError as error:
                     if isinstance(error, ProtocolError) and connection.fileno() == -1:
                         raise
                     # A local builder/encoder rejection has not damaged the
                     # connection; let the user correct the command and retry.
                     print(f'Request failed: {error}')
+                finally:
+                    # Unsolicited file events must not schedule extra stdin
+                    # reads while an existing prompt/command is still active.
+                    read_next.set()
         except (OSError, EOFError):
             # Network loss can also wake an in-flight request rather than the
             # command queue. Do not silently classify stdin errors as disconnects.

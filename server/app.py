@@ -1,4 +1,4 @@
-"""Bounded thread-per-client TCP server; HELLO, authentication and chat routing."""
+"""Bounded TCP server: authentication, chat routing and file negotiation."""
 from dataclasses import asdict, dataclass, field, replace
 import ipaddress
 import math
@@ -9,7 +9,8 @@ from uuid import uuid4
 
 from common.errors import ErrorCode, ProtocolError, user_message
 from common.handshake import accept_hello
-from common.models import ConnectionState, Message, MessageType, UserInfo
+from common.models import (ConnectionState, Message, MessageType, TransferStatus, UserInfo,
+                           check_transition)
 from common.protocol import (Direction, build_auth_ok, build_chat_ack, build_error,
                              build_message, build_user_list)
 from common.transport import SocketTransport
@@ -24,6 +25,7 @@ class Connection:
     state: ConnectionState = ConnectionState.CONNECTING
     transport: SocketTransport | None = None
     auth_ready: threading.Event = field(default_factory=threading.Event, repr=False)
+    transfer_ids: set[str] = field(default_factory=set, repr=False)
 
 
 @dataclass(frozen=True)
@@ -35,14 +37,25 @@ class UserSession:
     online: bool = True
 
 
+@dataclass
+class TransferSession:
+    offer: Message
+    sender_id: str
+    recipient_id: str
+    deadline: float
+    status: TransferStatus = TransferStatus.OFFERED
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
 class TCPServer:
     def __init__(self, host: str = '127.0.0.1', port: int = 5000, *, max_clients: int = 64,
                  handshake_timeout: float = 5.0, idle_timeout: float = 45.0,
-                 credentials: CredentialStore | None = None) -> None:
+                 credentials: CredentialStore | None = None,
+                 transfer_timeout: float = 60.0) -> None:
         if type(max_clients) is not int or max_clients < 1:
             raise ValueError('max_clients must be a positive integer')
         if any(not math.isfinite(value) or value <= 0
-               for value in (handshake_timeout, idle_timeout)):
+               for value in (handshake_timeout, idle_timeout, transfer_timeout)):
             raise ValueError('timeouts must be positive and finite')
         address = socket.gethostbyname(host)
         if not ipaddress.ip_address(address).is_loopback:
@@ -51,6 +64,8 @@ class TCPServer:
         self._users: dict[str, UserSession] = {}
         self.handshake_timeout = handshake_timeout
         self.idle_timeout = idle_timeout
+        self.transfer_timeout = transfer_timeout
+        self._transfers: dict[str, TransferSession] = {}
         self.max_clients = max_clients
         self._lock = threading.Lock()
         self._stopping = threading.Event()
@@ -69,12 +84,18 @@ class TCPServer:
     def connections(self) -> dict[str, Connection]:
         """Return copies of records under the registry lock."""
         with self._lock:
-            return {key: replace(value) for key, value in self._connections.items()}
+            return {key: replace(value, transfer_ids=set(value.transfer_ids))
+                    for key, value in self._connections.items()}
 
     def users(self) -> dict[str, UserSession]:
         """Snapshot of authenticated sessions; credential data is never included."""
         with self._lock:
             return dict(self._users)
+
+    def transfers(self) -> dict[str, TransferSession]:
+        """Snapshots of active negotiation sessions (no file contents)."""
+        with self._lock:
+            return {key: replace(value) for key, value in self._transfers.items()}
 
     def serve_forever(self) -> None:
         try:
@@ -134,10 +155,17 @@ class TCPServer:
                 for username, session in list(self._users.items()):
                     if session.connection_id == key:
                         del self._users[username]
-                record = self._connections.pop(key, None)
+                record = self._connections.get(key)
                 if record is not None:
                     record.state = ConnectionState.CLOSED
                     record.auth_ready.set()  # Release any route waiting for AUTH_OK.
+            try:
+                self._cleanup_transfers(key, ErrorCode.CONNECTION_LOST)
+            finally:
+                # Keep the worker registered until its notifications finish so
+                # shutdown can still interrupt I/O and join it.
+                with self._lock:
+                    self._connections.pop(key, None)
 
     def _session_loop(self, key: str, connection: socket.socket,
                       transport: SocketTransport) -> None:
@@ -145,8 +173,7 @@ class TCPServer:
         failures = 0
         while not self._stopping.is_set():
             # Bound a whole request, even if a peer sends bytes slowly.
-            transport.read_deadline = time.monotonic() + self.idle_timeout
-            message = transport.receive()
+            message = self._receive_session(key, transport)
             connection.settimeout(self.idle_timeout)
             if message is None:
                 return
@@ -191,14 +218,155 @@ class TCPServer:
             elif message.type == MessageType.CHAT_PUBLIC:
                 self._route_public(username, message, transport)
                 continue
+            elif message.type in {MessageType.FILE_OFFER, MessageType.FILE_ACCEPT, MessageType.FILE_REJECT}:
+                code = self._route_file(key, username, message)
+                if code is None:
+                    continue
             elif message.type == MessageType.LOGOUT:
                 return
             else:
                 code = ErrorCode.INVALID_FIELD
             transport.send(build_error(code, user_message(code),
-                                       ref_request_id=message.header['request_id']))
-            if failures >= 3 or message.type not in {MessageType.AUTH, MessageType.USER_LIST, MessageType.LOGOUT, MessageType.CHAT_PRIVATE, MessageType.CHAT_PUBLIC}:
+                                       ref_request_id=message.header['request_id'],
+                                       transfer_id=message.header.get('transfer_id')))
+            if failures >= 3 or message.type not in {
+                    MessageType.AUTH, MessageType.USER_LIST, MessageType.LOGOUT,
+                    MessageType.CHAT_PRIVATE, MessageType.CHAT_PUBLIC,
+                    MessageType.FILE_OFFER, MessageType.FILE_ACCEPT, MessageType.FILE_REJECT}:
                 return
+
+    def _receive_session(self, key: str, transport: SocketTransport) -> Message | None:
+        """Wake an existing worker for transfer deadlines without extending idle time.
+
+        FrameDecoder keeps partial reads across these timer wakeups. At least the
+        worker that created/accepted a transfer observes its new deadline.
+        """
+        idle_deadline = time.monotonic() + self.idle_timeout
+        while True:
+            self._cleanup_transfers(key, ErrorCode.TIMEOUT, expired_only=True)
+            with self._lock:
+                deadlines = [s.deadline for s in self._transfers.values()
+                             if key in (s.sender_id, s.recipient_id)]
+            transport.read_deadline = min([idle_deadline] + deadlines)
+            try:
+                return transport.receive()
+            except socket.timeout:
+                self._cleanup_transfers(key, ErrorCode.TIMEOUT, expired_only=True)
+                if time.monotonic() >= idle_deadline:
+                    raise
+
+    def _send_file_event(self, key: str, message: Message) -> bool:
+        """Use only the registered transport; isolate failed/partial writes."""
+        with self._lock:
+            target = self._connections.get(key)
+        if target is None or not target.auth_ready.wait(self.idle_timeout):
+            return False
+        with self._lock:
+            if self._stopping.is_set() or target.state != ConnectionState.AUTHENTICATED:
+                return False
+        try:
+            target.transport.send(message)
+            return True
+        except OSError:
+            try:
+                target.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            return False
+
+    def _finish_transfer(self, session: TransferSession, code: ErrorCode) -> None:
+        """Caller holds session.lock, never the registry lock during I/O."""
+        transfer_id = session.offer.header['transfer_id']
+        with self._lock:
+            if self._transfers.get(transfer_id) is not session:
+                return
+            check_transition(session.status, TransferStatus.FAILED)
+            session.status = TransferStatus.FAILED
+            del self._transfers[transfer_id]
+        error = build_error(code, user_message(code), transfer_id=transfer_id)
+        for key in (session.sender_id, session.recipient_id):
+            self._send_file_event(key, error)
+
+    def _cleanup_transfers(self, key: str, code: ErrorCode, *, expired_only: bool = False) -> None:
+        with self._lock:
+            sessions = [s for s in self._transfers.values()
+                        if key in (s.sender_id, s.recipient_id) and
+                        (not expired_only or s.deadline <= time.monotonic())]
+        for session in sessions:
+            # Never acquire a session lock while holding the registry lock.
+            with session.lock:
+                if not expired_only or session.deadline <= time.monotonic():
+                    self._finish_transfer(session, code)
+
+    def _route_file(self, key: str, username: str, message: Message) -> ErrorCode | None:
+        transfer_id = message.header['transfer_id']
+        if message.type == MessageType.FILE_OFFER:
+            with self._lock:
+                recipient = self._users.get(message.header['recipient'])
+                target = self._connections.get(recipient.connection_id) if recipient else None
+            if target is None:
+                return ErrorCode.RECIPIENT_OFFLINE
+            if target.connection_id == key:
+                return ErrorCode.INVALID_FIELD
+            if not target.auth_ready.wait(self.idle_timeout):
+                return ErrorCode.CONNECTION_LOST
+            session = TransferSession(message, key, target.connection_id,
+                                      time.monotonic() + self.transfer_timeout)
+            with session.lock:
+                with self._lock:
+                    if (self._stopping.is_set() or self._users.get(recipient.username) != recipient or
+                            target.state != ConnectionState.AUTHENTICATED):
+                        return ErrorCode.RECIPIENT_OFFLINE
+                    if (transfer_id in self._transfers or
+                            any(transfer_id in c.transfer_ids for c in self._connections.values())):
+                        return ErrorCode.TRANSFER_STATE
+                    # Bound live sessions and replay tombstones for each connection.
+                    owner = self._connections[key]
+                    if len(owner.transfer_ids) >= 64:
+                        return ErrorCode.QUEUE_FULL
+                    owner.transfer_ids.add(transfer_id)
+                    self._transfers[transfer_id] = session
+                header = dict(message.header)
+                header.pop('type')
+                forwarded = build_message(MessageType.FILE_OFFER, **dict(header, sender=username))
+                if not self._send_file_event(target.connection_id, forwarded):
+                    self._finish_transfer(session, ErrorCode.CONNECTION_LOST)
+            return None
+        with self._lock:
+            session = self._transfers.get(transfer_id)
+        if session is None:
+            return ErrorCode.TRANSFER_UNKNOWN
+        with session.lock:
+            with self._lock:
+                if self._transfers.get(transfer_id) is not session:
+                    return ErrorCode.TRANSFER_UNKNOWN
+                if session.recipient_id != key:
+                    return ErrorCode.TRANSFER_STATE
+                if session.status != TransferStatus.OFFERED:
+                    return ErrorCode.TRANSFER_STATE
+                expired = session.deadline <= time.monotonic()
+                if not expired:
+                    status = (TransferStatus.ACCEPTED if message.type == MessageType.FILE_ACCEPT
+                              else TransferStatus.REJECTED)
+                    check_transition(session.status, status)
+                    session.status = status
+                    session.deadline = time.monotonic() + self.transfer_timeout
+                    if status == TransferStatus.REJECTED:
+                        del self._transfers[transfer_id]
+            if expired:
+                self._finish_transfer(session, ErrorCode.TIMEOUT)
+                return ErrorCode.TRANSFER_UNKNOWN
+            # Notify the sender first. Echo the decision to the recipient only
+            # after forwarding succeeds; this is negotiation, never completion.
+            if not self._send_file_event(session.sender_id, message):
+                if status == TransferStatus.ACCEPTED:
+                    self._finish_transfer(session, ErrorCode.CONNECTION_LOST)
+                else:
+                    self._send_file_event(key, build_error(ErrorCode.CONNECTION_LOST,
+                                          user_message(ErrorCode.CONNECTION_LOST), transfer_id=transfer_id))
+            elif not self._send_file_event(key, message) and status == TransferStatus.ACCEPTED:
+                self._finish_transfer(session, ErrorCode.CONNECTION_LOST)
+        return None
 
     def _route_public(self, username: str, message: Message,
                       sender_transport: SocketTransport) -> None:
@@ -289,3 +457,5 @@ class TCPServer:
         for record in records:
             if record.worker is not threading.current_thread():
                 record.worker.join()
+        with self._lock:
+            self._transfers.clear()

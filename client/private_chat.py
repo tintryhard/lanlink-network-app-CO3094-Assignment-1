@@ -1,30 +1,43 @@
-"""Post-authentication client: one reader dispatches chat and request replies.
+"""Post-authentication client: one reader dispatches chat, files and replies.
 
 The client closes the socket on failure or close(); the caller may also use a
 socket context manager. on_message runs on the reader thread and must return
 promptly; it must not make synchronous client requests. Responses are correlated
 by ref_request_id, including concurrent USER_LIST requests.
+
+File negotiation messages/errors are asynchronous transfer_events keyed by
+transfer_id; callers must drain this queue. Its default capacity is 128 and an
+overflow closes the connection rather than silently losing transfer state.
 """
 import json
 import queue
 import socket
 import threading
+from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
 from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.models import Message, MessageType
-from common.protocol import build_chat_private, build_chat_public, build_logout, build_user_list
+from common.protocol import (build_chat_private, build_chat_public, build_file_accept,
+                             build_file_offer, build_file_reject, build_logout, build_user_list)
 from common.transport import SocketTransport
+from transfer.sender import inspect_file
 
 
 class PrivateChatClient:
     def __init__(self, transport: SocketTransport, *, timeout: float = 5.0,
                  on_message: Callable[[Message], None],
-                 on_disconnect: Callable[[], None] | None = None) -> None:
+                 on_disconnect: Callable[[], None] | None = None,
+                 transfer_events: queue.Queue | None = None) -> None:
         self.transport = transport
         self.timeout = timeout
         self.on_message = on_message
         self.on_disconnect = on_disconnect
+        # File decisions are asynchronous. The reader only enqueues; callers
+        # decide on their own thread, never while holding up the socket reader.
+        self.transfer_events = (transfer_events if transfer_events is not None
+                                else queue.Queue(maxsize=128))
         self._lock = threading.Lock()
         self._pending: dict[str, queue.Queue[Message | BaseException]] = {}
         self._error = None
@@ -73,6 +86,13 @@ class PrivateChatClient:
                     raise EOFError('Server disconnected')
                 if message.type in {MessageType.CHAT_PRIVATE, MessageType.CHAT_PUBLIC}:
                     self.on_message(message)
+                    continue
+                if (message.type in {MessageType.FILE_OFFER, MessageType.FILE_ACCEPT, MessageType.FILE_REJECT}
+                        or message.type == MessageType.ERROR and 'transfer_id' in message.header):
+                    try:
+                        self.transfer_events.put_nowait(message)
+                    except queue.Full:
+                        raise LanLinkError(ErrorCode.QUEUE_FULL) from None
                     continue
                 with self._lock:
                     ref = message.header.get('ref_request_id')
@@ -128,6 +148,31 @@ class PrivateChatClient:
 
     def send_public(self, text: str) -> Message:
         return self._request(build_chat_public(text), MessageType.CHAT_ACK)
+
+    def _send_file(self, message: Message) -> None:
+        with self._lock:
+            if self._error is not None:
+                raise self._error
+        try:
+            self.transport.send(message)
+        except OSError:
+            self.close()
+            raise
+
+    def offer_file(self, recipient: str, path: Path | str) -> str:
+        """Inspect/hash locally, send metadata only; decisions/errors are events."""
+        info = inspect_file(path, limits=self.transport.limits, cancel=self._stopped)
+        transfer_id = uuid4().hex
+        self._send_file(build_file_offer(transfer_id, recipient, info.name, info.size,
+                                        info.sha256, self.transport.limits.max_chunk_bytes,
+                                        limits=self.transport.limits))
+        return transfer_id
+
+    def accept_file(self, transfer_id: str) -> None:
+        self._send_file(build_file_accept(transfer_id))
+
+    def reject_file(self, transfer_id: str, reason: str | None = None) -> None:
+        self._send_file(build_file_reject(transfer_id, reason))
 
     def users(self) -> list[dict[str, Any]]:
         reply = self._request(build_user_list(), MessageType.USER_LIST)

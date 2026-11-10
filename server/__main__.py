@@ -24,17 +24,21 @@ def main(argv: list[str] | None = None) -> int | None:
     parser.add_argument('--port', type=int, default=5000)
     parser.add_argument('--timeout', type=float, default=5.0)
     parser.add_argument('--max-clients', type=int, default=64)
-    parser.add_argument('--idle-timeout', type=float, default=45.0)
+    parser.add_argument('--idle-timeout', type=float, default=120.0)
+    parser.add_argument('--transfer-timeout', type=float, default=60.0,
+                        help='Seconds allowed for each offered/accepted negotiation phase')
     parser.add_argument('--users', help='Path to hashed credential JSON (requires loopback bind)')
     args = parser.parse_args(argv)
     if (not math.isfinite(args.timeout) or args.timeout <= 0 or
-            not math.isfinite(args.idle_timeout) or args.idle_timeout <= 0 or args.max_clients < 1):
+            not math.isfinite(args.idle_timeout) or args.idle_timeout <= 0 or
+            not math.isfinite(args.transfer_timeout) or args.transfer_timeout <= 0 or args.max_clients < 1):
         parser.error("timeouts must be positive and finite; max-clients must be positive")
     server = None
     try:
         credentials = CredentialStore.load(args.users) if args.users else None
         server = TCPServer(args.host, args.port, max_clients=args.max_clients,
-                           handshake_timeout=args.timeout, idle_timeout=args.idle_timeout, credentials=credentials)
+                           handshake_timeout=args.timeout, idle_timeout=args.idle_timeout, credentials=credentials,
+                           transfer_timeout=args.transfer_timeout)
         print(f'Listening on {server.address}', flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
