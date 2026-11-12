@@ -31,6 +31,7 @@ class IncomingOffer:
 
     @classmethod
     def from_message(cls, msg: Message, *, limits=DEFAULT_LIMITS) -> 'IncomingOffer':
+        """Validate a FILE_OFFER message and build an IncomingOffer from its header."""
         from common.protocol import Direction
         checked = validate_message(msg.header, msg.payload, limits, Direction.SERVER_TO_CLIENT)
         if checked.type != MessageType.FILE_OFFER:
@@ -57,7 +58,7 @@ class Receiver:
         self._snapshot = TransferSnapshot(offer.transfer_id, TransferDirection.RECEIVE, offer.sender,
                                            offer.filename, offer.size, 0, TransferStatus.OFFERED)
         with self._updates.operation():
-            self._publish()
+            self._queue_snapshot()
 
     @property
     def snapshot(self) -> TransferSnapshot:
@@ -68,17 +69,20 @@ class Receiver:
     def part_path(self) -> Path | None:
         return self._part
 
-    def _publish(self) -> None:
+    def _queue_snapshot(self) -> None:
+        """Queue the current snapshot for on_update if the throttle lets it through."""
         if self._throttle.should_emit(self._snapshot):
             self._updates.queue(self._snapshot)
 
-    def _set(self, status: TransferStatus, **fields) -> None:
+    def _change_status(self, status: TransferStatus, **fields) -> None:
+        """Validate and apply a status change, then queue the new snapshot."""
         check_transition(self._snapshot.status, status)
         self._snapshot = replace(self._snapshot, status=status, **fields)
         self._last_activity = self.clock()
-        self._publish()
+        self._queue_snapshot()
 
     def _owns_reservation(self) -> bool:
+        """True if the reserved destination file is still the one this receiver created."""
         if self._reserved is None:
             return False
         try:
@@ -87,7 +91,8 @@ class Receiver:
         except OSError:
             return False
 
-    def _cleanup(self) -> None:
+    def _delete_partial_files(self) -> None:
+        """Close the .part file and delete it, plus our reserved destination placeholder."""
         if self._fd is not None:
             try:
                 os.close(self._fd)
@@ -105,11 +110,12 @@ class Receiver:
                     pass  # Best effort if the directory itself became inaccessible.
         self._part = self._reserved = None
 
-    def _fail(self, error: TransferError, status: TransferStatus = TransferStatus.FAILED) -> None:
+    def _fail_and_cleanup(self, error: TransferError, status: TransferStatus = TransferStatus.FAILED) -> None:
+        """Delete partial files and move to a terminal status with the error. Idempotent."""
         if self._snapshot.is_terminal:
             return
-        self._cleanup()
-        self._set(status, error=ErrorInfo(error.code, error.message))
+        self._delete_partial_files()
+        self._change_status(status, error=ErrorInfo(error.code, error.message))
 
     def start(self) -> None:
         """Create the directory, reserve final name and exclusively open a private part."""
@@ -151,25 +157,28 @@ class Receiver:
                 self._fd = os.open(part, os.O_CREAT | os.O_EXCL | os.O_WRONLY
                                    | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0), 0o600)
                 self._part = part
-                self._set(TransferStatus.ACCEPTED)
+                self._change_status(TransferStatus.ACCEPTED)
             except (OSError, TransferError) as error:
                 typed = io_error(error, missing=ErrorCode.PERMISSION_DENIED) if isinstance(error, OSError) else error
-                self._fail(typed)
+                self._fail_and_cleanup(typed)
                 raise typed from None
 
     def accept(self) -> Message:
+        """Prepare to receive (reserve name, open .part) and return the FILE_ACCEPT to send."""
         self.start()
         return build_file_accept(self.offer.transfer_id)
 
     def reject(self, reason: str | None = None) -> Message:
+        """Reject the offer and return the FILE_REJECT to send."""
         with self._updates.operation():
             if self._snapshot.status != TransferStatus.OFFERED:
                 raise TransferError(ErrorCode.TRANSFER_STATE)
             message = build_file_reject(self.offer.transfer_id, reason)
-            self._set(TransferStatus.REJECTED)
+            self._change_status(TransferStatus.REJECTED)
             return message
 
     def write(self, seq: int, data: bytes) -> None:
+        """Append one chunk to the .part file after checking its sequence number and size."""
         with self._updates.operation():
             if self._snapshot.status not in {TransferStatus.ACCEPTED, TransferStatus.TRANSFERRING}:
                 raise TransferError(ErrorCode.TRANSFER_STATE)
@@ -183,7 +192,7 @@ class Receiver:
                         or (len(data) != self.offer.chunk_size and size != self.offer.size)):
                     raise TransferError(ErrorCode.SIZE_MISMATCH)
                 if self._snapshot.status == TransferStatus.ACCEPTED:
-                    self._set(TransferStatus.TRANSFERRING)
+                    self._change_status(TransferStatus.TRANSFERRING)
                 view = memoryview(data)
                 while view:
                     written = os.write(self._fd, view)
@@ -194,13 +203,14 @@ class Receiver:
                 self._seq += 1
                 self._snapshot = replace(self._snapshot, processed_bytes=size)
                 self._last_activity = self.clock()
-                self._publish()
+                self._queue_snapshot()
             except (TransferError, OSError) as error:
                 typed = io_error(error) if isinstance(error, OSError) else error
-                self._fail(typed)
+                self._fail_and_cleanup(typed)
                 raise typed from None
 
-    def _result(self) -> Message:
+    def _build_result_message(self) -> Message:
+        """Build the FILE_RESULT reporting the current outcome to the sender."""
         error = self._snapshot.error
         return build_file_result(self.offer.transfer_id, self._snapshot.status == TransferStatus.COMPLETED,
                                   self._snapshot.processed_bytes, self._hash.hexdigest(),
@@ -212,8 +222,8 @@ class Receiver:
             if self._snapshot.status not in {TransferStatus.ACCEPTED, TransferStatus.TRANSFERRING}:
                 raise TransferError(ErrorCode.TRANSFER_STATE)
             if self._snapshot.status == TransferStatus.ACCEPTED:
-                self._set(TransferStatus.TRANSFERRING)
-            self._set(TransferStatus.VERIFYING)
+                self._change_status(TransferStatus.TRANSFERRING)
+            self._change_status(TransferStatus.VERIFYING)
             try:
                 if (type(total_chunks) is not int or type(total_bytes) is not int
                         or total_chunks != self._seq or total_bytes != self.offer.size
@@ -229,12 +239,17 @@ class Receiver:
                 os.replace(self._part, self._reserved)
                 saved_path = str(self._reserved)
                 self._part = self._reserved = None
-                self._set(TransferStatus.COMPLETED, saved_path=saved_path)
+                self._change_status(TransferStatus.COMPLETED, saved_path=saved_path)
             except (TransferError, OSError) as error:
-                self._fail(io_error(error) if isinstance(error, OSError) else error)
-            return self._result()
+                self._fail_and_cleanup(io_error(error) if isinstance(error, OSError) else error)
+            return self._build_result_message()
 
     def handle_message(self, msg: Message) -> list[Message]:
+        """Apply a message from the sender side and return the replies to send.
+
+        FILE_END returns the FILE_RESULT. Any error fails the transfer and also
+        returns a FILE_RESULT with ok=false.
+        """
         with self._updates.operation():
             if msg.header.get('transfer_id') != self.offer.transfer_id:
                 raise TransferError(ErrorCode.TRANSFER_UNKNOWN)
@@ -248,23 +263,25 @@ class Receiver:
                 elif msg.type == MessageType.FILE_END:
                     return [self.finish(h['total_chunks'], h['total_bytes'])]
                 elif msg.type == MessageType.FILE_CANCEL:
-                    self._fail(TransferError(ErrorCode.CANCELLED_BY_PEER), TransferStatus.CANCELLED)
+                    self._fail_and_cleanup(TransferError(ErrorCode.CANCELLED_BY_PEER), TransferStatus.CANCELLED)
                 elif msg.type == MessageType.ERROR:
-                    self._fail(TransferError(ErrorCode(h['code'])))
+                    self._fail_and_cleanup(TransferError(ErrorCode(h['code'])))
                 else:
                     raise TransferError(ErrorCode.TRANSFER_STATE)
             except (TransferError, ProtocolError) as error:
-                self._fail(TransferError(error.code))
-                return [self._result()]
+                self._fail_and_cleanup(TransferError(error.code))
+                return [self._build_result_message()]
             return []
 
     def abort(self, error: TransferError | None = None) -> None:
+        """Stop locally and delete partial files (CANCELLED for cancel codes, else FAILED)."""
         with self._updates.operation():
             error = error or TransferError(ErrorCode.CANCELLED_LOCAL)
             status = TransferStatus.CANCELLED if error.code in {ErrorCode.CANCELLED_LOCAL, ErrorCode.CANCELLED_BY_PEER} else TransferStatus.FAILED
-            self._fail(error, status)
+            self._fail_and_cleanup(error, status)
 
     def cancel(self) -> Message | None:
+        """Cancel locally and return the FILE_CANCEL to send, or None if already finished."""
         with self._updates.operation():
             if self._snapshot.is_terminal:
                 return None
@@ -272,9 +289,11 @@ class Receiver:
             return build_file_cancel(self.offer.transfer_id, ErrorCode.CANCELLED_LOCAL)
 
     def connection_lost(self) -> None:
+        """Fail the transfer because the connection to the server dropped."""
         self.abort(TransferError(ErrorCode.CONNECTION_LOST))
 
     def check_timeout(self) -> None:
+        """Fail with TIMEOUT if no chunk arrived for too long after accepting."""
         with self._updates.operation():
             if not self._snapshot.is_terminal and self._snapshot.status != TransferStatus.OFFERED and self.clock() - self._last_activity >= self.idle_timeout_s:
-                self._fail(TransferError(ErrorCode.TIMEOUT))
+                self._fail_and_cleanup(TransferError(ErrorCode.TIMEOUT))

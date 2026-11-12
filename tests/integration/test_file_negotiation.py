@@ -432,7 +432,7 @@ def test_offer_waits_for_auth_ok(accounts, monkeypatch):
         record = next(c for c in server.connections().values()
                       if c.socket.getpeername()[1] == connection.getsockname()[1])
         entered, release, route_started, offer_sent = (threading.Event() for _ in range(4))
-        original_send, original_route = record.transport.send, server._route_file
+        original_send, original_route = record.transport.send, server._negotiate_file_transfer
 
         def delayed(message):
             if message.type == MessageType.AUTH_OK:
@@ -447,7 +447,7 @@ def test_offer_waits_for_auth_ok(accounts, monkeypatch):
             return original_route(*args)
 
         monkeypatch.setattr(record.transport, 'send', delayed)
-        monkeypatch.setattr(server, '_route_file', route)
+        monkeypatch.setattr(server, '_negotiate_file_transfer', route)
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(authenticate, bob, 'bob', accounts[1]['bob'])
             try:

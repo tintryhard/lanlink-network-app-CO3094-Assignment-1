@@ -56,7 +56,13 @@ class PrivateChatClient:
         self._reader = threading.Thread(target=self._read_loop, name='lanlink-client-reader')
         self._reader.start()
 
-    def _fail(self, error: BaseException) -> None:
+    def _close_with_error(self, error: BaseException) -> None:
+        """Close the connection once and release everything waiting on it.
+
+        The first caller records the error, closes the socket, wakes every pending
+        request with the error and tells each live transfer the connection is lost.
+        Later callers only wait until that cleanup has finished.
+        """
         with self._lock:
             first = self._error is None
             if first:
@@ -92,6 +98,11 @@ class PrivateChatClient:
                 transfer.connection_lost()  # stops sending; deletes partial downloads
 
     def _read_loop(self) -> None:
+        """Reader thread: receive every frame and route it by type.
+
+        Chat goes to on_message, file messages to _dispatch_file_message, and any
+        other reply to the request waiting for its ref_request_id.
+        """
         try:
             while not self._stopped.is_set():
                 try:
@@ -105,7 +116,7 @@ class PrivateChatClient:
                     continue
                 if (message.type in FILE_TYPES
                         or message.type == MessageType.ERROR and 'transfer_id' in message.header):
-                    self._handle_file(message)
+                    self._dispatch_file_message(message)
                     continue
                 with self._lock:
                     ref = message.header.get('ref_request_id')
@@ -114,13 +125,14 @@ class PrivateChatClient:
                     raise ProtocolError(ErrorCode.INVALID_FIELD, 'Unexpected server response')
                 inbox.put_nowait(message)
         except (OSError, EOFError, LanLinkError) as error:
-            self._fail(error)
+            self._close_with_error(error)
         finally:
-            self._fail(EOFError('Client reader stopped'))
+            self._close_with_error(EOFError('Client reader stopped'))
             if self.on_disconnect is not None:
                 self.on_disconnect()
 
     def _request(self, message: Message, expected: MessageType) -> Message:
+        """Send a request and block until the reply with the matching ref_request_id."""
         inbox: queue.Queue[Message | BaseException] = queue.Queue(maxsize=1)
         ref = message.header['request_id']
         with self._lock:
@@ -162,31 +174,36 @@ class PrivateChatClient:
     def send_public(self, text: str) -> Message:
         return self._request(build_chat_public(text), MessageType.CHAT_ACK)
 
-    def _event(self, item: Message | TransferSnapshot) -> None:
+    def _push_transfer_event(self, item: Message | TransferSnapshot) -> None:
+        """Hand a file event (Message or final TransferSnapshot) to the UI queue."""
         try:
             self.transfer_events.put_nowait(item)
         except queue.Full:
             # Never drop transfer state silently: close the connection instead.
-            self._fail(LanLinkError(ErrorCode.QUEUE_FULL))
+            self._close_with_error(LanLinkError(ErrorCode.QUEUE_FULL))
 
-    def _on_update(self, snapshot: TransferSnapshot) -> None:
-        """Engine callback: report a transfer's end once if it is still registered."""
+    def _report_transfer_end(self, snapshot: TransferSnapshot) -> None:
+        """Engine callback: report a transfer's end once, if it is still registered."""
         if not snapshot.is_terminal:
             return
         with self._lock:
             registered = self._transfers.pop(snapshot.transfer_id, None) is not None
         if registered:
-            self._event(snapshot)
+            self._push_transfer_event(snapshot)
 
-    def _handle_file(self, message: Message) -> None:
-        """Reader thread: drive the engine for this transfer and report to the caller."""
+    def _dispatch_file_message(self, message: Message) -> None:
+        """Reader thread: feed a file message to its engine and report it to the UI.
+
+        Replies returned by the engine (e.g. FILE_RESULT) are sent back. A FILE_ACCEPT
+        for our own offer starts the chunk-sending thread.
+        """
         transfer_id, kind = message.header['transfer_id'], message.type
         with self._lock:
             if kind == MessageType.FILE_OFFER:
                 self._offers[transfer_id] = message
             transfer = self._transfers.get(transfer_id)
             # Rejections and errors are reported as the raw message below, so
-            # unregister first to avoid a second report from _on_update.
+            # unregister first to avoid a second report from _report_transfer_end.
             if kind in {MessageType.FILE_REJECT, MessageType.ERROR}:
                 self._transfers.pop(transfer_id, None)
         if isinstance(transfer, Receiver) and kind == MessageType.FILE_ACCEPT:
@@ -197,23 +214,24 @@ class PrivateChatClient:
                 for reply in transfer.handle_message(message) or []:
                     self.transport.send(reply)
             except TransferError:
-                pass  # The engine is now FAILED and _on_update reports it.
+                pass  # The engine is now FAILED and _report_transfer_end reports it.
             if kind == MessageType.FILE_ACCEPT:
-                threading.Thread(target=self._pump, args=(transfer,), daemon=True,
+                threading.Thread(target=self._send_chunks_until_done, args=(transfer,), daemon=True,
                                  name='lanlink-file-sender').start()
         if kind in {MessageType.FILE_OFFER, MessageType.FILE_ACCEPT,
                     MessageType.FILE_REJECT, MessageType.ERROR}:
-            self._event(message)
+            self._push_transfer_event(message)
 
-    def _pump(self, sender: SendSession) -> None:
-        """Send chunks and FILE_END on their own thread so the reader keeps reading."""
+    def _send_chunks_until_done(self, sender: SendSession) -> None:
+        """Sending thread: send chunks and FILE_END so the reader keeps reading."""
         try:
             for message in sender.outgoing():
                 self.transport.send(message)  # The write lock keeps frames whole.
         except OSError:
             sender.connection_lost()
 
-    def _send_file(self, message: Message) -> None:
+    def _send_or_close(self, message: Message) -> None:
+        """Send a file control message; close the client if the socket fails."""
         with self._lock:
             if self._error is not None:
                 raise self._error
@@ -227,41 +245,42 @@ class PrivateChatClient:
         """Hash the file locally and send the offer; chunks follow once it is accepted."""
         limits = self.transport.limits
         info = inspect_file(path, limits=limits, cancel=self._stopped)
-        sender = SendSession(info, recipient, limits=limits, on_update=self._on_update)
+        sender = SendSession(info, recipient, limits=limits, on_update=self._report_transfer_end)
         offer = sender.offer_message()
         with self._lock:
             self._transfers[sender.transfer_id] = sender
-        self._send_file(offer)
+        self._send_or_close(offer)
         return sender.transfer_id
 
-    def _take_offer(self, transfer_id: str) -> Message | None:
+    def _pop_pending_offer(self, transfer_id: str) -> Message | None:
+        """Remove and return the incoming offer for transfer_id, or None if unknown."""
         with self._lock:
             if transfer_id in self._transfers:
                 raise LanLinkError(ErrorCode.TRANSFER_STATE)  # Already running here.
             return self._offers.pop(transfer_id, None)
 
     def accept_file(self, transfer_id: str) -> None:
-        offer = self._take_offer(transfer_id)
+        offer = self._pop_pending_offer(transfer_id)
         if offer is None:
             # Not offered to us: send anyway and let the server report the error.
-            self._send_file(build_file_accept(transfer_id))
+            self._send_or_close(build_file_accept(transfer_id))
             return
         limits = self.transport.limits
         receiver = Receiver(IncomingOffer.from_message(offer, limits=limits), self.download_dir,
-                            limits=limits, on_update=self._on_update)
+                            limits=limits, on_update=self._report_transfer_end)
         try:
             accept = receiver.accept()  # Reserves the file name and opens the .part file.
         except TransferError:
-            self._send_file(build_file_reject(transfer_id))  # We cannot store it.
+            self._send_or_close(build_file_reject(transfer_id))  # We cannot store it.
             raise
         # Register before sending FILE_ACCEPT, so the first chunk finds the receiver.
         with self._lock:
             self._transfers[transfer_id] = receiver
-        self._send_file(accept)
+        self._send_or_close(accept)
 
     def reject_file(self, transfer_id: str, reason: str | None = None) -> None:
-        self._take_offer(transfer_id)
-        self._send_file(build_file_reject(transfer_id, reason))
+        self._pop_pending_offer(transfer_id)
+        self._send_or_close(build_file_reject(transfer_id, reason))
 
     def users(self) -> list[dict[str, Any]]:
         reply = self._request(build_user_list(), MessageType.USER_LIST)
@@ -276,6 +295,6 @@ class PrivateChatClient:
             self.close()
 
     def close(self) -> None:
-        self._fail(EOFError('Client closed'))
+        self._close_with_error(EOFError('Client closed'))
         if threading.current_thread() is not self._reader:
             self._reader.join()

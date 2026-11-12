@@ -23,6 +23,10 @@ class UpdatePublisher:
 
     @contextmanager
     def operation(self):
+        """Hold the engine lock for one state change; deliver queued updates after release.
+
+        Nested operations share a depth counter, so only the outermost one flushes.
+        """
         outer = False
         try:
             with self.lock:
@@ -37,6 +41,7 @@ class UpdatePublisher:
                 self.flush()
 
     def queue(self, snapshot):
+        """Add a snapshot to deliver later; a newer one with the same status replaces it."""
         # Progress may be coalesced while an observer is busy; state changes stay.
         if self._pending and self._pending[-1].status == snapshot.status:
             self._pending[-1] = snapshot
@@ -44,6 +49,11 @@ class UpdatePublisher:
             self._pending.append(snapshot)
 
     def flush(self):
+        """Deliver queued snapshots in order, outside the lock, from a single thread.
+
+        If another thread is already delivering, it will also deliver ours. Errors in
+        the callback are counted and logged once, never raised into the engine.
+        """
         with self.lock:
             if self._delivering:
                 return
@@ -79,6 +89,12 @@ class ProgressThrottle:
         self._time = 0.0
 
     def should_emit(self, snapshot: TransferSnapshot) -> bool:
+        """Decide whether this progress snapshot is worth reporting.
+
+        Status changes and the final byte always pass; other progress needs at least
+        min_interval_s and min_delta_bytes since the last report. Nothing passes
+        after a terminal snapshot.
+        """
         now = self.clock()
         previous = self._last
         if previous and (previous.is_terminal or snapshot.transfer_id != previous.transfer_id

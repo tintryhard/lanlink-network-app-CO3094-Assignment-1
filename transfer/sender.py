@@ -37,23 +37,27 @@ class Chunk:
     data: bytes
 
 
-def _cancelled(cancel) -> bool:
+def _is_cancel_requested(cancel) -> bool:
+    """True if cancel (an Event or a callable) asks to stop; None means never."""
     return bool(cancel.is_set() if hasattr(cancel, 'is_set') else cancel()) if cancel is not None else False
 
 
-def _check_cancel(cancel) -> None:
-    if _cancelled(cancel):
+def _raise_if_cancelled(cancel) -> None:
+    """Raise CANCELLED_LOCAL if cancellation was requested."""
+    if _is_cancel_requested(cancel):
         raise TransferError(ErrorCode.CANCELLED_LOCAL)
 
 
-def _regular(path: Path) -> os.stat_result:
+def _stat_regular_file(path: Path) -> os.stat_result:
+    """Return the file's stat, or raise FILE_NOT_FOUND if it is not a regular file."""
     result = path.stat()
     if not stat.S_ISREG(result.st_mode):
         raise TransferError(ErrorCode.FILE_NOT_FOUND)
     return result
 
 
-def _same(before: os.stat_result, after: os.stat_result) -> bool:
+def _same_file_state(before: os.stat_result, after: os.stat_result) -> bool:
+    """True if two stats describe the same, unmodified file (size, mtime, inode, device)."""
     return (before.st_size, before.st_mtime_ns, before.st_ino, before.st_dev) == (
         after.st_size, after.st_mtime_ns, after.st_ino, after.st_dev)
 
@@ -63,16 +67,16 @@ def inspect_file(path: Path | str, *, limits: ProtocolLimits = DEFAULT_LIMITS,
     """Reject oversize before reading, then hash bounded chunks and check stat again."""
     path = Path(path)
     try:
-        _check_cancel(cancel)
-        before = _regular(path)
+        _raise_if_cancelled(cancel)
+        before = _stat_regular_file(path)
         if before.st_size > limits.max_file_bytes:
             raise TransferError(ErrorCode.FILE_TOO_LARGE)
         digest, count = hashlib.sha256(), 0
         with path.open('rb') as source:
-            if not _same(before, os.fstat(source.fileno())):
+            if not _same_file_state(before, os.fstat(source.fileno())):
                 raise TransferError(ErrorCode.SOURCE_CHANGED)
             while True:
-                _check_cancel(cancel)
+                _raise_if_cancelled(cancel)
                 data = source.read(limits.max_chunk_bytes)
                 if not data:
                     break
@@ -82,9 +86,9 @@ def inspect_file(path: Path | str, *, limits: ProtocolLimits = DEFAULT_LIMITS,
                     raise TransferError(ErrorCode.SOURCE_CHANGED)
                 if progress:
                     progress(count)
-            if not _same(before, os.fstat(source.fileno())):
+            if not _same_file_state(before, os.fstat(source.fileno())):
                 raise TransferError(ErrorCode.SOURCE_CHANGED)
-        if count != before.st_size or not _same(before, _regular(path)):
+        if count != before.st_size or not _same_file_state(before, _stat_regular_file(path)):
             raise TransferError(ErrorCode.SOURCE_CHANGED)
         return FileInfo(path, sanitize_filename(path.name), count, digest.hexdigest(), before.st_mtime_ns)
     except OSError as error:
@@ -98,16 +102,16 @@ def iter_chunks(path: Path | str, *, chunk_size: int, expected: FileInfo | None 
         raise TransferError(ErrorCode.INVALID_FIELD)
     path = Path(path)
     try:
-        _check_cancel(cancel)
-        before = _regular(path)
+        _raise_if_cancelled(cancel)
+        before = _stat_regular_file(path)
         if expected and (before.st_size != expected.size or before.st_mtime_ns != expected.mtime_ns):
             raise TransferError(ErrorCode.SOURCE_CHANGED)
         digest, count, seq = hashlib.sha256(), 0, 0
         with path.open('rb') as source:
-            if not _same(before, os.fstat(source.fileno())):
+            if not _same_file_state(before, os.fstat(source.fileno())):
                 raise TransferError(ErrorCode.SOURCE_CHANGED)
             while True:
-                _check_cancel(cancel)
+                _raise_if_cancelled(cancel)
                 data = source.read(chunk_size)
                 if not data:
                     break
@@ -117,9 +121,9 @@ def iter_chunks(path: Path | str, *, chunk_size: int, expected: FileInfo | None 
                 digest.update(data)
                 yield Chunk(seq, data)
                 seq += 1
-            if not _same(before, os.fstat(source.fileno())):
+            if not _same_file_state(before, os.fstat(source.fileno())):
                 raise TransferError(ErrorCode.SOURCE_CHANGED)
-        if count != before.st_size or not _same(before, _regular(path)):
+        if count != before.st_size or not _same_file_state(before, _stat_regular_file(path)):
             raise TransferError(ErrorCode.SOURCE_CHANGED)
         if expected and digest.hexdigest() != expected.sha256:
             raise TransferError(ErrorCode.SOURCE_CHANGED)
@@ -153,33 +157,37 @@ class SendSession:
         self._snapshot = TransferSnapshot(self.transfer_id, TransferDirection.SEND, peer,
                                            info.name, info.size, 0, TransferStatus.OFFERED)
         with self._updates.operation():
-            self._publish()
+            self._queue_snapshot()
 
     @property
     def snapshot(self) -> TransferSnapshot:
         with self._lock:
             return self._snapshot
 
-    def _publish(self) -> None:
+    def _queue_snapshot(self) -> None:
+        """Queue the current snapshot for on_update if the throttle lets it through."""
         if self._throttle.should_emit(self._snapshot):
             self._updates.queue(self._snapshot)
 
-    def _set(self, status: TransferStatus, **fields) -> None:
+    def _change_status(self, status: TransferStatus, **fields) -> None:
+        """Validate and apply a status change, then queue the new snapshot."""
         check_transition(self._snapshot.status, status)
         self._snapshot = replace(self._snapshot, status=status, **fields)
         self._last_activity = self.clock()
-        self._publish()
+        self._queue_snapshot()
 
-    def _stop(self, code: ErrorCode, status: TransferStatus = TransferStatus.FAILED) -> None:
+    def _stop_with_error(self, code: ErrorCode, status: TransferStatus = TransferStatus.FAILED) -> None:
+        """Move to a terminal status with an error and stop reading the file. Idempotent."""
         if self._snapshot.is_terminal:
             return
         self._cancel_event.set()
         if self._chunks is not None:
             self._chunks.close()
             self._chunks = None
-        self._set(status, error=ErrorInfo(code, TransferError(code).message))
+        self._change_status(status, error=ErrorInfo(code, TransferError(code).message))
 
     def offer_message(self) -> Message:
+        """Build the FILE_OFFER for this transfer (only while OFFERED)."""
         with self._updates.operation():
             if self._snapshot.status != TransferStatus.OFFERED:
                 raise TransferError(ErrorCode.TRANSFER_STATE)
@@ -187,6 +195,10 @@ class SendSession:
                                      self.info.sha256, self.chunk_size, limits=self.limits)
 
     def handle_message(self, msg: Message) -> None:
+        """Apply a message from the receiver side: accept, reject, cancel, error or result.
+
+        Only a FILE_RESULT whose size and hash match the source completes the transfer.
+        """
         with self._updates.operation():
             if msg.header.get('transfer_id') != self.transfer_id:
                 raise TransferError(ErrorCode.TRANSFER_UNKNOWN)
@@ -195,28 +207,28 @@ class SendSession:
             try:
                 msg = validate_message(msg.header, msg.payload, self.limits)
             except ProtocolError as error:
-                self._stop(error.code)
+                self._stop_with_error(error.code)
                 raise TransferError(error.code) from None
             h = msg.header
             if msg.type == MessageType.FILE_CANCEL:
-                self._stop(ErrorCode.CANCELLED_BY_PEER, TransferStatus.CANCELLED)
+                self._stop_with_error(ErrorCode.CANCELLED_BY_PEER, TransferStatus.CANCELLED)
             elif msg.type == MessageType.ERROR:
-                self._stop(ErrorCode(h['code']))
+                self._stop_with_error(ErrorCode(h['code']))
             elif msg.type == MessageType.FILE_ACCEPT and self._snapshot.status == TransferStatus.OFFERED:
-                self._set(TransferStatus.ACCEPTED)
+                self._change_status(TransferStatus.ACCEPTED)
             elif msg.type == MessageType.FILE_REJECT and self._snapshot.status == TransferStatus.OFFERED:
-                self._stop(ErrorCode.REJECTED_BY_PEER, TransferStatus.REJECTED)
+                self._stop_with_error(ErrorCode.REJECTED_BY_PEER, TransferStatus.REJECTED)
             elif msg.type == MessageType.FILE_RESULT and not h['ok']:
-                self._stop(ErrorCode(h['error_code']))
+                self._stop_with_error(ErrorCode(h['error_code']))
             elif msg.type == MessageType.FILE_RESULT and self._snapshot.status == TransferStatus.VERIFYING:
                 if h['received_bytes'] != self.info.size:
-                    self._stop(ErrorCode.SIZE_MISMATCH)
+                    self._stop_with_error(ErrorCode.SIZE_MISMATCH)
                 elif h.get('sha256', self.info.sha256) != self.info.sha256:
-                    self._stop(ErrorCode.HASH_MISMATCH)
+                    self._stop_with_error(ErrorCode.HASH_MISMATCH)
                 else:
-                    self._set(TransferStatus.COMPLETED)
+                    self._change_status(TransferStatus.COMPLETED)
             else:
-                self._stop(ErrorCode.TRANSFER_STATE)
+                self._stop_with_error(ErrorCode.TRANSFER_STATE)
                 raise TransferError(ErrorCode.TRANSFER_STATE)
 
     def outgoing(self) -> Iterator[Message]:
@@ -225,7 +237,7 @@ class SendSession:
             if self._snapshot.status != TransferStatus.ACCEPTED or self._started:
                 return
             self._started = True
-            self._set(TransferStatus.TRANSFERRING)
+            self._change_status(TransferStatus.TRANSFERRING)
             self._chunks = iter_chunks(self.info.path, chunk_size=self.chunk_size,
                                        expected=self.info, cancel=self._cancel_event)
         count = 0
@@ -238,12 +250,12 @@ class SendSession:
                         chunk = next(self._chunks)
                     except StopIteration:
                         self._chunks = None
-                        self._set(TransferStatus.VERIFYING)
+                        self._change_status(TransferStatus.VERIFYING)
                         message = build_file_end(self.transfer_id, count, self.info.size, limits=self.limits)
                         break
                     self._snapshot = replace(self._snapshot, processed_bytes=self._snapshot.processed_bytes + len(chunk.data))
                     self._last_activity = self.clock()
-                    self._publish()
+                    self._queue_snapshot()
                     message = build_file_chunk(self.transfer_id, chunk.seq, chunk.data, limits=self.limits)
                     count += 1
                 # An observer may have cancelled when the operation released
@@ -259,7 +271,7 @@ class SendSession:
         except TransferError as error:
             with self._updates.operation():
                 if not self._snapshot.is_terminal:
-                    self._stop(error.code)
+                    self._stop_with_error(error.code)
             yield build_file_cancel(self.transfer_id, error.code)
         finally:
             with self._updates.operation():
@@ -267,26 +279,30 @@ class SendSession:
                     self._chunks.close()
                     self._chunks = None
                     if not self._snapshot.is_terminal:
-                        self._stop(ErrorCode.CANCELLED_LOCAL, TransferStatus.CANCELLED)
+                        self._stop_with_error(ErrorCode.CANCELLED_LOCAL, TransferStatus.CANCELLED)
 
     def cancel(self) -> Message | None:
+        """Cancel locally and return the FILE_CANCEL to send, or None if already finished."""
         with self._updates.operation():
             if self._snapshot.is_terminal:
                 return None
-            self._stop(ErrorCode.CANCELLED_LOCAL, TransferStatus.CANCELLED)
+            self._stop_with_error(ErrorCode.CANCELLED_LOCAL, TransferStatus.CANCELLED)
             return build_file_cancel(self.transfer_id, ErrorCode.CANCELLED_LOCAL)
 
     def abort(self, error: TransferError | None = None) -> None:
+        """Fail the transfer locally without sending anything."""
         with self._updates.operation():
-            self._stop(error.code if error else ErrorCode.INTERNAL)
+            self._stop_with_error(error.code if error else ErrorCode.INTERNAL)
 
     def connection_lost(self) -> None:
+        """Fail the transfer because the connection to the server dropped."""
         with self._updates.operation():
-            self._stop(ErrorCode.CONNECTION_LOST)
+            self._stop_with_error(ErrorCode.CONNECTION_LOST)
 
     def check_timeout(self) -> None:
+        """Fail with TIMEOUT if there was no activity for too long."""
         with self._updates.operation():
             status = self._snapshot.status
             timeout = self.accept_timeout_s if status == TransferStatus.OFFERED else self.result_timeout_s
             if not self._snapshot.is_terminal and self.clock() - self._last_activity >= timeout:
-                self._stop(ErrorCode.TIMEOUT)
+                self._stop_with_error(ErrorCode.TIMEOUT)

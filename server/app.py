@@ -118,7 +118,7 @@ class TCPServer:
                         connection.close()
                         continue
                     key = uuid4().hex
-                    worker = threading.Thread(target=self._run_client, args=(key, connection),
+                    worker = threading.Thread(target=self._serve_client, args=(key, connection),
                                               name=f'lanlink-{key}')
                     self._connections[key] = Connection(key, connection, worker)
                     try:
@@ -130,7 +130,12 @@ class TCPServer:
         finally:
             self.shutdown()
 
-    def _run_client(self, key: str, connection: socket.socket) -> None:
+    def _serve_client(self, key: str, connection: socket.socket) -> None:
+        """Worker thread for one connection: HELLO, then the message loop, then cleanup.
+
+        On exit it removes the user, fails this connection's transfers and
+        unregisters the connection.
+        """
         try:
             with connection:
                 transport = SocketTransport(connection, direction=Direction.CLIENT_TO_SERVER)
@@ -151,7 +156,7 @@ class TCPServer:
                         self._connections[key].state = ConnectionState.HELLO_ACCEPTED
                 transport.read_deadline = None
                 connection.settimeout(self.idle_timeout)
-                self._session_loop(key, connection, transport)
+                self._dispatch_client_messages(key, connection, transport)
         except (OSError, EOFError, ProtocolError):
             # A peer failure affects only this connection.
             pass
@@ -165,20 +170,24 @@ class TCPServer:
                     record.state = ConnectionState.CLOSED
                     record.auth_ready.set()  # Release any route waiting for AUTH_OK.
             try:
-                self._cleanup_transfers(key, ErrorCode.CONNECTION_LOST)
+                self._fail_transfers_of(key, ErrorCode.CONNECTION_LOST)
             finally:
                 # Keep the worker registered until its notifications finish so
                 # shutdown can still interrupt I/O and join it.
                 with self._lock:
                     self._connections.pop(key, None)
 
-    def _session_loop(self, key: str, connection: socket.socket,
+    def _dispatch_client_messages(self, key: str, connection: socket.socket,
                       transport: SocketTransport) -> None:
+        """Handle one client's messages in order until LOGOUT, disconnect or a fatal error.
+
+        Each request either gets its normal reply or one ERROR with ref_request_id.
+        """
         username = None
         failures = 0
         while not self._stopping.is_set():
             # Bound a whole request, even if a peer sends bytes slowly.
-            message = self._receive_session(key, transport)
+            message = self._receive_until_deadline(key, transport)
             connection.settimeout(self.idle_timeout)
             if message is None:
                 return
@@ -224,11 +233,11 @@ class TCPServer:
                 self._route_public(username, message, transport)
                 continue
             elif message.type in {MessageType.FILE_OFFER, MessageType.FILE_ACCEPT, MessageType.FILE_REJECT}:
-                code = self._route_file(key, username, message)
+                code = self._negotiate_file_transfer(key, username, message)
                 if code is None:
                     continue
             elif message.type in FILE_CONTENT_TYPES:
-                code = self._relay_file(key, message)
+                code = self._relay_file_content(key, message)
                 if code is None:
                     continue
             elif message.type == MessageType.LOGOUT:
@@ -245,15 +254,15 @@ class TCPServer:
                     *FILE_CONTENT_TYPES}:
                 return
 
-    def _receive_session(self, key: str, transport: SocketTransport) -> Message | None:
-        """Wake an existing worker for transfer deadlines without extending idle time.
+    def _receive_until_deadline(self, key: str, transport: SocketTransport) -> Message | None:
+        """Receive the next message, waking up early to expire this client's transfers.
 
         FrameDecoder keeps partial reads across these timer wakeups. At least the
         worker that created/accepted a transfer observes its new deadline.
         """
         idle_deadline = time.monotonic() + self.idle_timeout
         while True:
-            self._cleanup_transfers(key, ErrorCode.TIMEOUT, expired_only=True)
+            self._fail_transfers_of(key, ErrorCode.TIMEOUT, expired_only=True)
             with self._lock:
                 deadlines = [s.deadline for s in self._transfers.values()
                              if key in (s.sender_id, s.recipient_id)]
@@ -261,12 +270,15 @@ class TCPServer:
             try:
                 return transport.receive()
             except socket.timeout:
-                self._cleanup_transfers(key, ErrorCode.TIMEOUT, expired_only=True)
+                self._fail_transfers_of(key, ErrorCode.TIMEOUT, expired_only=True)
                 if time.monotonic() >= idle_deadline:
                     raise
 
-    def _send_file_event(self, key: str, message: Message) -> bool:
-        """Use only the registered transport; isolate failed/partial writes."""
+    def _send_to_connection(self, key: str, message: Message) -> bool:
+        """Send a message to a connected, authenticated client; return False on failure.
+
+        A failed write shuts that socket down, because a partial frame breaks the stream.
+        """
         with self._lock:
             target = self._connections.get(key)
         if target is None or not target.auth_ready.wait(self.idle_timeout):
@@ -284,8 +296,11 @@ class TCPServer:
                 pass
             return False
 
-    def _finish_transfer(self, session: TransferSession, code: ErrorCode) -> None:
-        """Caller holds session.lock, never the registry lock during I/O."""
+    def _fail_transfer_and_notify(self, session: TransferSession, code: ErrorCode) -> None:
+        """Mark the transfer FAILED, remove it and send ERROR(code) to both parties.
+
+        The caller holds session.lock; the registry lock is never held during I/O.
+        """
         transfer_id = session.offer.header['transfer_id']
         with self._lock:
             if self._transfers.get(transfer_id) is not session:
@@ -295,9 +310,10 @@ class TCPServer:
             del self._transfers[transfer_id]
         error = build_error(code, user_message(code), transfer_id=transfer_id)
         for key in (session.sender_id, session.recipient_id):
-            self._send_file_event(key, error)
+            self._send_to_connection(key, error)
 
-    def _cleanup_transfers(self, key: str, code: ErrorCode, *, expired_only: bool = False) -> None:
+    def _fail_transfers_of(self, key: str, code: ErrorCode, *, expired_only: bool = False) -> None:
+        """Fail the transfers this connection takes part in (only expired ones if asked)."""
         with self._lock:
             sessions = [s for s in self._transfers.values()
                         if key in (s.sender_id, s.recipient_id) and
@@ -306,9 +322,15 @@ class TCPServer:
             # Never acquire a session lock while holding the registry lock.
             with session.lock:
                 if not expired_only or session.deadline <= time.monotonic():
-                    self._finish_transfer(session, code)
+                    self._fail_transfer_and_notify(session, code)
 
-    def _route_file(self, key: str, username: str, message: Message) -> ErrorCode | None:
+    def _negotiate_file_transfer(self, key: str, username: str, message: Message) -> ErrorCode | None:
+        """Handle FILE_OFFER, FILE_ACCEPT and FILE_REJECT.
+
+        An offer creates an OFFERED session and is forwarded to the recipient. A
+        decision from the recipient moves it to ACCEPTED or REJECTED and is sent to
+        the sender, then echoed back to the recipient.
+        """
         transfer_id = message.header['transfer_id']
         if message.type == MessageType.FILE_OFFER:
             with self._lock:
@@ -341,8 +363,8 @@ class TCPServer:
                 header = dict(message.header)
                 header.pop('type')
                 forwarded = build_message(MessageType.FILE_OFFER, **dict(header, sender=username))
-                if not self._send_file_event(target.connection_id, forwarded):
-                    self._finish_transfer(session, ErrorCode.CONNECTION_LOST)
+                if not self._send_to_connection(target.connection_id, forwarded):
+                    self._fail_transfer_and_notify(session, ErrorCode.CONNECTION_LOST)
             return None
         with self._lock:
             session = self._transfers.get(transfer_id)
@@ -366,23 +388,23 @@ class TCPServer:
                     if status == TransferStatus.REJECTED:
                         del self._transfers[transfer_id]
             if expired:
-                self._finish_transfer(session, ErrorCode.TIMEOUT)
+                self._fail_transfer_and_notify(session, ErrorCode.TIMEOUT)
                 return ErrorCode.TRANSFER_UNKNOWN
             
             # Notify the sender first. Echo the decision to the recipient only
             # after forwarding succeeds; this is negotiation, never completion.
-            if not self._send_file_event(session.sender_id, message):
+            if not self._send_to_connection(session.sender_id, message):
                 if status == TransferStatus.ACCEPTED:
-                    self._finish_transfer(session, ErrorCode.CONNECTION_LOST)
+                    self._fail_transfer_and_notify(session, ErrorCode.CONNECTION_LOST)
                 else:
-                    self._send_file_event(key, build_error(ErrorCode.CONNECTION_LOST,
+                    self._send_to_connection(key, build_error(ErrorCode.CONNECTION_LOST,
                                           user_message(ErrorCode.CONNECTION_LOST), transfer_id=transfer_id))
-            elif not self._send_file_event(key, message) and status == TransferStatus.ACCEPTED:
-                self._finish_transfer(session, ErrorCode.CONNECTION_LOST)
+            elif not self._send_to_connection(key, message) and status == TransferStatus.ACCEPTED:
+                self._fail_transfer_and_notify(session, ErrorCode.CONNECTION_LOST)
         return None
 
     @staticmethod
-    def _next_status(session: TransferSession, key: str, message: Message) -> TransferStatus | None:
+    def _status_after_message(session: TransferSession, key: str, message: Message) -> TransferStatus | None:
         """New transfer state after this message, or None if this party may not send it now."""
         status, kind = session.status, message.type
         from_sender, from_recipient = key == session.sender_id, key == session.recipient_id
@@ -401,7 +423,7 @@ class TCPServer:
                 return TransferStatus.COMPLETED
         return None
 
-    def _relay_file(self, key: str, message: Message) -> ErrorCode | None:
+    def _relay_file_content(self, key: str, message: Message) -> ErrorCode | None:
         """Forward FILE_CHUNK/END/RESULT/CANCEL to the other party of the transfer.
 
         The server only checks who may send what and when; the receiving client
@@ -416,7 +438,7 @@ class TCPServer:
             with self._lock:
                 if self._transfers.get(transfer_id) is not session:
                     return ErrorCode.TRANSFER_UNKNOWN
-                status = self._next_status(session, key, message)
+                status = self._status_after_message(session, key, message)
                 if status is None:
                     return ErrorCode.TRANSFER_STATE
                 session.status = status
@@ -425,12 +447,13 @@ class TCPServer:
                 if finished:
                     del self._transfers[transfer_id]
             peer = session.recipient_id if key == session.sender_id else session.sender_id
-            if not self._send_file_event(peer, message) and not finished:
-                self._finish_transfer(session, ErrorCode.CONNECTION_LOST)
+            if not self._send_to_connection(peer, message) and not finished:
+                self._fail_transfer_and_notify(session, ErrorCode.CONNECTION_LOST)
         return None
 
     def _route_public(self, username: str, message: Message,
                       sender_transport: SocketTransport) -> None:
+        """Forward a public chat to every other online user, then ACK the sender."""
         with self._lock:
             targets = [(session, self._connections.get(session.connection_id))
                        for session in self._users.values()
@@ -463,6 +486,7 @@ class TCPServer:
 
     def _route_private(self, username: str, message: Message,
                        sender_transport: SocketTransport) -> ErrorCode | None:
+        """Forward a private chat to its recipient, then ACK the sender."""
         recipient = message.header['recipient']
         with self._lock:
             session = self._users.get(recipient)
