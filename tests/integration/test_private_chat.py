@@ -724,3 +724,20 @@ def test_cli_rejects_remote_address_before_connect(username, monkeypatch, capsys
         arguments.extend(['--username', username])
     assert client_main(arguments) == 1
     assert 'localhost' in capsys.readouterr().err
+
+
+def test_chat_ack_arrives_before_client_timeout(accounts):
+    # The server waits only briefly for a recipient's AUTH_OK, never the idle timeout.
+    with running(credentials=accounts[0], idle_timeout=30) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        login(stack, server, accounts, 'bob')
+        record = server._connections[server.users()['bob'].connection_id]
+        record.auth_ready.clear()  # as if bob's AUTH_OK were still being sent
+        try:
+            started = time.monotonic()
+            with pytest.raises(LanLinkError) as error:
+                alice.send_private('bob', 'hello')
+            assert error.value.code == ErrorCode.CONNECTION_LOST
+            assert time.monotonic() - started < alice.timeout
+        finally:
+            record.auth_ready.set()

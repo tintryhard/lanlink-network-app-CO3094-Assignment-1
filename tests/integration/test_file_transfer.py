@@ -2,6 +2,7 @@
 from contextlib import ExitStack
 import hashlib
 import os
+import time
 from uuid import uuid4
 
 import pytest
@@ -88,3 +89,47 @@ def test_sender_disconnect_mid_transfer_removes_partial_file(accounts, tmp_path)
         event(bob, MessageType.ERROR, transfer_id, ErrorCode.CONNECTION_LOST)
         wait_until(lambda: not list((tmp_path / 'downloads').iterdir()))
         assert not server.transfers()
+
+
+def slow_chunks(client, monkeypatch, delay):
+    """Delay each FILE_CHUNK the client sends, so a transfer lasts a while."""
+    original = client.transport.send
+
+    def send(message):
+        if message.type == MessageType.FILE_CHUNK:
+            time.sleep(delay)
+        original(message)
+    monkeypatch.setattr(client.transport, 'send', send)
+
+
+def test_receiver_disconnect_mid_transfer_stops_sender(accounts, tmp_path, monkeypatch):
+    source = tmp_path / 'big.bin'
+    source.write_bytes(os.urandom(20 * DEFAULT_LIMITS.max_chunk_bytes))
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        bob, _ = async_login(stack, server, accounts, 'bob')
+        slow_chunks(alice, monkeypatch, 0.05)
+        transfer_id = alice.offer_file('bob', source)
+        event(bob, MessageType.FILE_OFFER, transfer_id)
+        bob.accept_file(transfer_id)
+        wait_until(lambda: server.transfers()[transfer_id].status == TransferStatus.TRANSFERRING)
+        bob.close()
+        event(alice, MessageType.FILE_ACCEPT)
+        event(alice, MessageType.ERROR, transfer_id, ErrorCode.CONNECTION_LOST)
+        assert not list((tmp_path / 'downloads').iterdir())  # bob deleted his .part
+        wait_until(lambda: not server.transfers())
+        assert len(alice.users()) == 1  # alice is still connected
+
+
+def test_quiet_receiver_is_not_dropped_by_idle_timeout(accounts, tmp_path, monkeypatch):
+    source = tmp_path / 'slow.bin'
+    source.write_bytes(os.urandom(10 * DEFAULT_LIMITS.max_chunk_bytes))
+    with running(credentials=accounts[0], idle_timeout=0.5) as server, ExitStack() as stack:
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        bob, _ = async_login(stack, server, accounts, 'bob')
+        slow_chunks(alice, monkeypatch, 0.1)  # about 1s in total, longer than idle_timeout
+        transfer_id = alice.offer_file('bob', source)
+        event(bob, MessageType.FILE_OFFER, transfer_id)
+        bob.accept_file(transfer_id)
+        sent, received = finished(alice), finished(bob)
+        assert sent.status == received.status == TransferStatus.COMPLETED

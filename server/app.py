@@ -20,6 +20,9 @@ from server.auth import CredentialStore
 # Messages relayed unchanged between the two parties of an accepted transfer.
 FILE_CONTENT_TYPES = {MessageType.FILE_CHUNK, MessageType.FILE_END,
                       MessageType.FILE_RESULT, MessageType.FILE_CANCEL}
+# How long a route waits for the recipient's AUTH_OK to be sent. Kept well below
+# the client's 5s request timeout so the sender always gets its ACK or ERROR.
+AUTH_READY_WAIT_S = 1.0
 
 
 @dataclass
@@ -272,7 +275,14 @@ class TCPServer:
             except socket.timeout:
                 self._fail_transfers_of(key, ErrorCode.TIMEOUT, expired_only=True)
                 if time.monotonic() >= idle_deadline:
-                    raise
+                    with self._lock:
+                        busy = any(key in (s.sender_id, s.recipient_id)
+                                   for s in self._transfers.values())
+                    if not busy:
+                        raise
+                    # A receiver only gets chunks and sends nothing until FILE_RESULT;
+                    # a live transfer counts as activity (stalled ones expire above).
+                    idle_deadline = time.monotonic() + self.idle_timeout
 
     def _send_to_connection(self, key: str, message: Message) -> bool:
         """Send a message to a connected, authenticated client; return False on failure.
@@ -281,7 +291,7 @@ class TCPServer:
         """
         with self._lock:
             target = self._connections.get(key)
-        if target is None or not target.auth_ready.wait(self.idle_timeout):
+        if target is None or not target.auth_ready.wait(AUTH_READY_WAIT_S):
             return False
         with self._lock:
             if self._stopping.is_set() or target.state != ConnectionState.AUTHENTICATED:
@@ -340,7 +350,7 @@ class TCPServer:
                 return ErrorCode.RECIPIENT_OFFLINE
             if target.connection_id == key:
                 return ErrorCode.INVALID_FIELD
-            if not target.auth_ready.wait(self.idle_timeout):
+            if not target.auth_ready.wait(AUTH_READY_WAIT_S):
                 return ErrorCode.CONNECTION_LOST
             
             session = TransferSession(message, key, target.connection_id,
@@ -463,7 +473,7 @@ class TCPServer:
         forwarded = build_message(MessageType.CHAT_PUBLIC, message.payload,
                                   sender=username, message_id=message_id, timestamp_ms=timestamp_ms)
         for session, target in targets:
-            if target is None or not target.auth_ready.wait(self.idle_timeout):
+            if target is None or not target.auth_ready.wait(AUTH_READY_WAIT_S):
                 continue
             # Recheck the snapshot after waiting; never send to a replacement
             # login or a session removed by disconnect/shutdown.
@@ -496,7 +506,7 @@ class TCPServer:
             return ErrorCode.RECIPIENT_OFFLINE
         # Never send unsolicited chat before the target's AUTH_OK. Also released
         # by worker cleanup if its authentication reply could not be sent.
-        if not target.auth_ready.wait(self.idle_timeout):
+        if not target.auth_ready.wait(AUTH_READY_WAIT_S):
             return ErrorCode.CONNECTION_LOST
         with self._lock:
             if (self._stopping.is_set() or self._users.get(recipient) != session or
