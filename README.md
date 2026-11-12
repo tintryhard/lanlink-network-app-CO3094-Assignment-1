@@ -75,9 +75,23 @@ EOF on terminal input logs out. Usernames and message text preserve their case.
 User lists are requested, not broadcast. They contain authenticated users only,
 including the requester, with username, online=true, peer IP and peer TCP port.
 
-**Passwords and chat travel in plaintext TCP in this stage.** This is a localhost
-demo, not secure deployment authentication. The server requires a loopback bind
-even without credentials; the CLI checks the connected peer is loopback. TLS is not implemented.
+### TLS and LAN use (Stage 7)
+
+Without TLS, passwords and chat are plaintext, so both the server bind and the
+client connection are restricted to loopback. To run across a LAN, use TLS
+(stdlib `ssl`, TLS 1.2+) with a self-signed certificate:
+
+```bash
+sh scripts/make_dev_cert.sh   # creates certs/server.crt and certs/server.key
+# Server machine
+python -m server --host 0.0.0.0 --port 5000 --users data/users.json --cert certs/server.crt --key certs/server.key
+# Each client machine (copy only certs/server.crt, never the key)
+python -m client --host <server-ip> --port 5000 --username alice --cafile certs/server.crt
+```
+
+The client trusts exactly that certificate (pinning), so only the holder of the
+server key can complete the handshake. The host name is not checked because a
+LAN server's IP may change.
 
 Omit `--username` to run the original handshake-only client. Starting the server
 without `--users` preserves handshake functionality but rejects every AUTH.

@@ -1,4 +1,4 @@
-"""TCP handshake, localhost login and private/public chat demonstration."""
+"""CLI client: TCP (or TLS) handshake, login, chat and file transfer."""
 import argparse
 import getpass
 import ipaddress
@@ -15,21 +15,28 @@ from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.handshake import initiate_hello
 from common.models import Message, MessageType, TransferSnapshot, TransferStatus
 from common.protocol import Direction, build_auth, build_logout, build_user_list
+from common.tls import client_context
 from common.transport import SocketTransport
 from client.private_chat import PrivateChatClient
 
 
-def _connect_local(host: str, port: int, timeout: float) -> socket.socket:
+def _connect(host: str, port: int, timeout: float, cafile: str | None = None) -> socket.socket:
+    """Open a TCP connection; with cafile, wrap it in TLS that trusts only that certificate."""
     address = socket.gethostbyname(host)
-    if not ipaddress.ip_address(address).is_loopback:
-        raise ValueError('TCP client is restricted to localhost until TLS is implemented')
-    return socket.create_connection((address, port), timeout=timeout)
+    if cafile is None and not ipaddress.ip_address(address).is_loopback:
+        raise ValueError('Plaintext is restricted to localhost; pass --cafile to use TLS')
+    connection = socket.create_connection((address, port), timeout=timeout)
+    if cafile is None:
+        return connection
+    try:
+        return client_context(cafile).wrap_socket(connection, server_hostname=host)
+    except BaseException:
+        connection.close()
+        raise
 
 
-def connect_hello(host: str, port: int, *, timeout: float = 5.0) -> Message:
-    with _connect_local(host, port, timeout) as connection:
-        if not ipaddress.ip_address(connection.getpeername()[0]).is_loopback:
-            raise ValueError('TCP client is restricted to localhost until TLS is implemented')
+def connect_hello(host: str, port: int, *, timeout: float = 5.0, cafile: str | None = None) -> Message:
+    with _connect(host, port, timeout, cafile) as connection:
         return initiate_hello(SocketTransport(connection, direction=Direction.SERVER_TO_CLIENT))
 
 
@@ -79,11 +86,8 @@ def _read_command(prompt: str) -> str:
     return data.decode(sys.stdin.encoding or 'utf-8', errors=sys.stdin.errors or 'strict').rstrip('\r')
 
 
-def login_cli(host: str, port: int, username: str, timeout: float) -> None:
-    with _connect_local(host, port, timeout) as connection:
-        if not ipaddress.ip_address(connection.getpeername()[0]).is_loopback:
-            raise ValueError('Password login is restricted to localhost until TLS is implemented')
-        
+def login_cli(host: str, port: int, username: str, timeout: float, cafile: str | None = None) -> None:
+    with _connect(host, port, timeout, cafile) as connection:
         transport = SocketTransport(connection, direction=Direction.SERVER_TO_CLIENT)
         initiate_hello(transport)
         authenticate(transport, username, getpass.getpass('Password: '))
@@ -226,14 +230,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--port', type=int, default=5000)
     parser.add_argument('--timeout', type=float, default=5.0)
     parser.add_argument('--username', help='Prompt for password, show users and remain logged in')
+    parser.add_argument('--cafile', help="Server's TLS certificate (PEM); required for a non-localhost host")
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error('--timeout must be positive and finite')
     try:
         if args.username:
-            login_cli(args.host, args.port, args.username, args.timeout)
+            login_cli(args.host, args.port, args.username, args.timeout, args.cafile)
             return 0
-        reply = connect_hello(args.host, args.port, timeout=args.timeout)
+        reply = connect_hello(args.host, args.port, timeout=args.timeout, cafile=args.cafile)
     except (OSError, EOFError, LanLinkError, ValueError) as error:
         print(f'Client failed: {error}', file=sys.stderr)
         return 1

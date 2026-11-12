@@ -1,8 +1,9 @@
-"""Bounded TCP server: authentication, chat routing and file negotiation."""
+"""Bounded TCP server (optionally TLS): authentication, chat routing and file transfer."""
 from dataclasses import asdict, dataclass, field, replace
 import ipaddress
 import math
 import socket
+import ssl
 import threading
 import time
 from uuid import uuid4
@@ -59,15 +60,16 @@ class TCPServer:
     def __init__(self, host: str = '127.0.0.1', port: int = 5000, *, max_clients: int = 64,
                  handshake_timeout: float = 5.0, idle_timeout: float = 45.0,
                  credentials: CredentialStore | None = None,
-                 transfer_timeout: float = 60.0) -> None:
+                 transfer_timeout: float = 60.0, tls: ssl.SSLContext | None = None) -> None:
         if type(max_clients) is not int or max_clients < 1:
             raise ValueError('max_clients must be a positive integer')
         if any(not math.isfinite(value) or value <= 0
                for value in (handshake_timeout, idle_timeout, transfer_timeout)):
             raise ValueError('timeouts must be positive and finite')
         address = socket.gethostbyname(host)
-        if not ipaddress.ip_address(address).is_loopback:
-            raise ValueError('TCP server requires a loopback bind until TLS is implemented')
+        if tls is None and not ipaddress.ip_address(address).is_loopback:
+            raise ValueError('A plaintext server requires a loopback bind; use TLS on a LAN')
+        self.tls = tls
         self.credentials = credentials
         self._users: dict[str, UserSession] = {}
         self.handshake_timeout = handshake_timeout
@@ -140,6 +142,16 @@ class TCPServer:
         unregisters the connection.
         """
         try:
+            if self.tls is not None:
+                # Handshake here, not in serve_forever, so a slow client never blocks accept().
+                connection.settimeout(self.handshake_timeout)
+                try:
+                    connection = self.tls.wrap_socket(connection, server_side=True)
+                except BaseException:
+                    connection.close()
+                    raise
+                with self._lock:
+                    self._connections[key].socket = connection  # what shutdown() interrupts
             with connection:
                 transport = SocketTransport(connection, direction=Direction.CLIENT_TO_SERVER)
                 with self._lock:
