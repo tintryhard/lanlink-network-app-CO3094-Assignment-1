@@ -2,11 +2,11 @@
 
 Course project skeleton for Python, TCP/UDP sockets, TLS and PySide6.
 
-**Status:** Stage 5A supports concurrent TCP handshakes, local password
-verification, authenticated user lists, private/public chat, file offer/accept/reject
-negotiation and logout. No file contents are transmitted. The server retains the bounded
-thread-per-client architecture. Existing file-engine and file-widget components
-are not integrated into a complete application.
+**Status:** Stage 5B supports concurrent TCP handshakes, local password
+verification, authenticated user lists, private/public chat, logout and file
+transfer (offer/accept/reject, then chunked content relayed by the server and
+verified by SHA-256). The server retains the bounded thread-per-client
+architecture. The Qt file widgets are not integrated yet.
 
 ## Team ownership
 - **A:** `server/`, `common/transport.py`, `common/tls.py`; architecture and network tests.
@@ -174,6 +174,24 @@ The wire schemas and protocol version are unchanged. Offer and decision routing
 preserve their original `request_id`; transfer notifications are identified by
 `transfer_id`, independently of synchronous chat/user-list `_pending` requests.
 Clients must understand the new file-event dispatch before using this stage.
+
+### File content transfer (Stage 5B)
+
+After `/accept ID`, the receiver reserves a name in `downloads/` (next to where the
+client runs) and writes to a private `.part` file. The sender's client then sends
+`FILE_CHUNK` frames (64 KiB, numbered by `seq`) from a background thread, followed
+by `FILE_END`. The server relays these unchanged, but only from the transfer's sender
+and only while the transfer is `ACCEPTED`/`TRANSFERRING`. The receiver checks the
+sequence, sizes and SHA-256, renames the `.part` file to its final name, and answers
+with `FILE_RESULT`, which the server relays back to the sender. Either side may send
+`FILE_CANCEL`. Both CLIs print one final line per transfer, such as
+`File ID (report.pdf) completed, saved to downloads/report.pdf`.
+
+Any relayed message resets the `--transfer-timeout` deadline. A wrong party or
+state gets `ERROR(TRANSFER_STATE)` and an unknown ID gets `ERROR(TRANSFER_UNKNOWN)`;
+neither closes the connection. On disconnect the surviving peer gets
+`ERROR(CONNECTION_LOST)` and the receiver deletes its partial file. The
+`File negotiation (Stage 5A)` notes above still describe offers and decisions.
 
 ### Private routing and client workers
 

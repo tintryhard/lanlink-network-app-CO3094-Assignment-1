@@ -13,7 +13,7 @@ from typing import Any
 
 from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.handshake import initiate_hello
-from common.models import Message, MessageType
+from common.models import Message, MessageType, TransferSnapshot, TransferStatus
 from common.protocol import Direction, build_auth, build_logout, build_user_list
 from common.transport import SocketTransport
 from client.private_chat import PrivateChatClient
@@ -139,6 +139,15 @@ def login_cli(host: str, port: int, username: str, timeout: float) -> None:
                     return
                 if isinstance(command, BaseException):
                     raise command
+                if isinstance(command, TransferSnapshot):  # A transfer has ended.
+                    if command.saved_path:
+                        result = f'completed, saved to {command.saved_path}'
+                    elif command.status == TransferStatus.COMPLETED:
+                        result = f'completed, {command.peer} verified the file'
+                    else:
+                        result = f'{command.status.value}: {command.error.message if command.error else ""}'
+                    print(f'\nFile {command.transfer_id} ({command.filename}) {result}', flush=True)
+                    continue
                 if isinstance(command, Message):
                     transfer_id = command.header['transfer_id']
                     if command.type == MessageType.FILE_OFFER:
@@ -182,6 +191,7 @@ def login_cli(host: str, port: int, username: str, timeout: float) -> None:
                             print('Usage: /accept ID')
                             continue
                         client.accept_file(transfer_id)
+                        print(f'Accepted {transfer_id}; receiving into {client.download_dir}/')
                     elif command == '/reject' or command.startswith('/reject '):
                         transfer_id, _, reason = command[8:].partition(' ')
                         if not transfer_id:

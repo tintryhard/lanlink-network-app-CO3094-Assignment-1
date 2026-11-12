@@ -13,13 +13,19 @@ from uuid import uuid4
 import pytest
 
 from client.__main__ import authenticate, main as client_main
-from common.errors import ErrorCode, ProtocolError
+from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.models import MessageType, TransferStatus
 from common.protocol import (DEFAULT_LIMITS, build_file_accept, build_file_chunk, build_file_end,
                              build_file_offer, build_file_reject, build_user_list, encode_message)
 from tests.integration.test_auth import exchange_error, open_client
 from tests.integration.test_concurrency import running, wait_until
 from tests.integration.test_private_chat import accounts, async_login, login
+
+
+@pytest.fixture(autouse=True)
+def isolated_downloads(tmp_path, monkeypatch):
+    # Clients save into ./downloads; keep that inside the test's temp folder.
+    monkeypatch.chdir(tmp_path)
 
 
 def offer(client, recipient='bob', transfer_id=None, **metadata):
@@ -66,10 +72,14 @@ def test_offer_decision_metadata_and_chat_preserved(accounts, tmp_path, accept):
         decision = event(alice, kind, transfer_id)
         assert dict(event(bob, kind, transfer_id).header) == dict(decision.header)
         if accept:
-            assert server.transfers()[transfer_id].status == TransferStatus.ACCEPTED
+            # Acceptance starts the real transfer; both sides report completion.
+            for client in (alice, bob):
+                done = client.transfer_events.get(timeout=3)
+                assert done.status == TransferStatus.COMPLETED
+            assert (tmp_path / 'downloads' / path.name).read_bytes() == b'hello'
+            wait_until(lambda: not server.transfers())
         else:
             assert decision.header['reason'] == 'No thanks' and not server.transfers()
-        # Neither inspection nor acceptance activates the existing chunk engines.
         assert alice.transfer_events.empty() and bob.transfer_events.empty()
         alice.send_private('bob', 'still private')
         assert bob_chat.get(timeout=2).payload == b'still private'
@@ -113,9 +123,11 @@ def test_unknown_unauthorized_duplicate_and_invalid_transitions(accounts):
         bob.accept_file(transfer_id)
         event(alice, MessageType.FILE_ACCEPT, transfer_id)
         event(bob, MessageType.FILE_ACCEPT, transfer_id)
+        # A second decision on a running transfer is refused locally.
         for action in (bob.accept_file, bob.reject_file):
-            action(transfer_id)
-            event(bob, MessageType.ERROR, transfer_id, ErrorCode.TRANSFER_STATE)
+            with pytest.raises(LanLinkError) as failure:
+                action(transfer_id)
+            assert failure.value.code == ErrorCode.TRANSFER_STATE
         assert server.transfers()[transfer_id].status == TransferStatus.ACCEPTED
         assert len(bob.users()) == 3
 
@@ -310,11 +322,13 @@ def test_bounded_offer_history(accounts):
 
 @pytest.mark.parametrize('builder', [lambda i: build_file_chunk(i, 0, b'x'),
                                      lambda i: build_file_end(i, 0, 0)])
-def test_chunk_and_end_are_still_unsupported(accounts, builder):
+def test_chunk_and_end_for_unknown_transfer_are_recoverable(accounts, builder):
     with running(credentials=accounts[0]) as server, ExitStack() as stack:
-        _, transport = login(stack, server, accounts, 'alice')
-        exchange_error(transport, builder(uuid4().hex), ErrorCode.INVALID_FIELD)
-        assert transport.receive() is None and not server.transfers()
+        alice, _ = async_login(stack, server, accounts, 'alice')
+        transfer_id = uuid4().hex
+        alice.transport.send(builder(transfer_id))
+        event(alice, MessageType.ERROR, transfer_id, ErrorCode.TRANSFER_UNKNOWN)
+        assert len(alice.users()) == 1 and not server.transfers()
 
 
 def test_shutdown_cleans_offered_and_accepted_sessions(accounts):
@@ -366,6 +380,7 @@ def test_cli_offer_accept_reject_while_reader_stays_responsive(accounts, tmp_pat
                 event(bob, MessageType.FILE_REJECT)
                 event(bob, MessageType.FILE_ACCEPT, state['accept'])
                 state['reject'] = offer(bob, 'alice').header['transfer_id']
+                wait_until(lambda: state['reject'] in server.transfers())
                 return f'/reject {state["reject"]} Please ask later'
             if step == 3:
                 decision = event(bob, MessageType.FILE_REJECT, state['reject'])
@@ -379,7 +394,7 @@ def test_cli_offer_accept_reject_while_reader_stays_responsive(accounts, tmp_pat
         assert client_main(['--port', str(server.address[1]), '--username', 'alice']) == 0
         output = capsys.readouterr().out
         assert 'Offer sent:' in output and 'File offer' in output
-        assert 'chat during file negotiation' in output and 'no content sent' in output
+        assert 'chat during file negotiation' in output and 'receiving into downloads/' in output
         wait_until(lambda: not server.transfers() and 'alice' not in server.users())
 
 

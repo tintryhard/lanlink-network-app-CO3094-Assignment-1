@@ -10,11 +10,16 @@ from uuid import uuid4
 from common.errors import ErrorCode, ProtocolError, user_message
 from common.handshake import accept_hello
 from common.models import (ConnectionState, Message, MessageType, TransferStatus, UserInfo,
-                           check_transition)
+                           check_transition, is_terminal)
 from common.protocol import (Direction, build_auth_ok, build_chat_ack, build_error,
                              build_message, build_user_list)
 from common.transport import SocketTransport
 from server.auth import CredentialStore
+
+
+# Messages relayed unchanged between the two parties of an accepted transfer.
+FILE_CONTENT_TYPES = {MessageType.FILE_CHUNK, MessageType.FILE_END,
+                      MessageType.FILE_RESULT, MessageType.FILE_CANCEL}
 
 
 @dataclass
@@ -222,6 +227,10 @@ class TCPServer:
                 code = self._route_file(key, username, message)
                 if code is None:
                     continue
+            elif message.type in FILE_CONTENT_TYPES:
+                code = self._relay_file(key, message)
+                if code is None:
+                    continue
             elif message.type == MessageType.LOGOUT:
                 return
             else:
@@ -232,7 +241,8 @@ class TCPServer:
             if failures >= 3 or message.type not in {
                     MessageType.AUTH, MessageType.USER_LIST, MessageType.LOGOUT,
                     MessageType.CHAT_PRIVATE, MessageType.CHAT_PUBLIC,
-                    MessageType.FILE_OFFER, MessageType.FILE_ACCEPT, MessageType.FILE_REJECT}:
+                    MessageType.FILE_OFFER, MessageType.FILE_ACCEPT, MessageType.FILE_REJECT,
+                    *FILE_CONTENT_TYPES}:
                 return
 
     def _receive_session(self, key: str, transport: SocketTransport) -> Message | None:
@@ -310,6 +320,7 @@ class TCPServer:
                 return ErrorCode.INVALID_FIELD
             if not target.auth_ready.wait(self.idle_timeout):
                 return ErrorCode.CONNECTION_LOST
+            
             session = TransferSession(message, key, target.connection_id,
                                       time.monotonic() + self.transfer_timeout)
             with session.lock:
@@ -324,6 +335,7 @@ class TCPServer:
                     owner = self._connections[key]
                     if len(owner.transfer_ids) >= 64:
                         return ErrorCode.QUEUE_FULL
+                    # Update both sites 
                     owner.transfer_ids.add(transfer_id)
                     self._transfers[transfer_id] = session
                 header = dict(message.header)
@@ -356,6 +368,7 @@ class TCPServer:
             if expired:
                 self._finish_transfer(session, ErrorCode.TIMEOUT)
                 return ErrorCode.TRANSFER_UNKNOWN
+            
             # Notify the sender first. Echo the decision to the recipient only
             # after forwarding succeeds; this is negotiation, never completion.
             if not self._send_file_event(session.sender_id, message):
@@ -365,6 +378,54 @@ class TCPServer:
                     self._send_file_event(key, build_error(ErrorCode.CONNECTION_LOST,
                                           user_message(ErrorCode.CONNECTION_LOST), transfer_id=transfer_id))
             elif not self._send_file_event(key, message) and status == TransferStatus.ACCEPTED:
+                self._finish_transfer(session, ErrorCode.CONNECTION_LOST)
+        return None
+
+    @staticmethod
+    def _next_status(session: TransferSession, key: str, message: Message) -> TransferStatus | None:
+        """New transfer state after this message, or None if this party may not send it now."""
+        status, kind = session.status, message.type
+        from_sender, from_recipient = key == session.sender_id, key == session.recipient_id
+        if kind == MessageType.FILE_CANCEL and (from_sender or from_recipient):
+            return TransferStatus.CANCELLED
+        if from_sender and status in {TransferStatus.ACCEPTED, TransferStatus.TRANSFERRING}:
+            if kind == MessageType.FILE_CHUNK:
+                return TransferStatus.TRANSFERRING
+            if kind == MessageType.FILE_END:
+                return TransferStatus.VERIFYING
+        if from_recipient and kind == MessageType.FILE_RESULT and status != TransferStatus.OFFERED:
+            # A failed result may come early (e.g. bad chunk); success only after FILE_END.
+            if not message.header['ok']:
+                return TransferStatus.FAILED
+            if status == TransferStatus.VERIFYING:
+                return TransferStatus.COMPLETED
+        return None
+
+    def _relay_file(self, key: str, message: Message) -> ErrorCode | None:
+        """Forward FILE_CHUNK/END/RESULT/CANCEL to the other party of the transfer.
+
+        The server only checks who may send what and when; the receiving client
+        checks sequence numbers, sizes and the SHA-256 digest.
+        """
+        transfer_id = message.header['transfer_id']
+        with self._lock:
+            session = self._transfers.get(transfer_id)
+        if session is None:
+            return ErrorCode.TRANSFER_UNKNOWN
+        with session.lock:
+            with self._lock:
+                if self._transfers.get(transfer_id) is not session:
+                    return ErrorCode.TRANSFER_UNKNOWN
+                status = self._next_status(session, key, message)
+                if status is None:
+                    return ErrorCode.TRANSFER_STATE
+                session.status = status
+                session.deadline = time.monotonic() + self.transfer_timeout  # activity resets the timer
+                finished = is_terminal(status)
+                if finished:
+                    del self._transfers[transfer_id]
+            peer = session.recipient_id if key == session.sender_id else session.sender_id
+            if not self._send_file_event(peer, message) and not finished:
                 self._finish_transfer(session, ErrorCode.CONNECTION_LOST)
         return None
 

@@ -5,9 +5,11 @@ socket context manager. on_message runs on the reader thread and must return
 promptly; it must not make synchronous client requests. Responses are correlated
 by ref_request_id, including concurrent USER_LIST requests.
 
-File negotiation messages/errors are asynchronous transfer_events keyed by
-transfer_id; callers must drain this queue. Its default capacity is 128 and an
-overflow closes the connection rather than silently losing transfer state.
+File transfers: the reader feeds incoming file messages to the transfer engines
+(transfer.sender / transfer.receiver); a sender thread pumps chunks after
+FILE_ACCEPT. transfer_events receives offers, decisions and errors (Messages)
+plus one final TransferSnapshot when a transfer ends. Callers must drain this
+queue; its default capacity is 128 and an overflow closes the connection.
 """
 import json
 import queue
@@ -15,22 +17,28 @@ import socket
 import threading
 from pathlib import Path
 from typing import Any, Callable
-from uuid import uuid4
 
-from common.errors import ErrorCode, LanLinkError, ProtocolError
-from common.models import Message, MessageType
+from common.errors import ErrorCode, LanLinkError, ProtocolError, TransferError
+from common.models import Message, MessageType, TransferSnapshot
 from common.protocol import (build_chat_private, build_chat_public, build_file_accept,
-                             build_file_offer, build_file_reject, build_logout, build_user_list)
+                             build_file_reject, build_logout, build_user_list)
 from common.transport import SocketTransport
-from transfer.sender import inspect_file
+from transfer.receiver import IncomingOffer, Receiver
+from transfer.sender import SendSession, inspect_file
+
+FILE_TYPES = {MessageType.FILE_OFFER, MessageType.FILE_ACCEPT, MessageType.FILE_REJECT,
+              MessageType.FILE_CHUNK, MessageType.FILE_END, MessageType.FILE_RESULT,
+              MessageType.FILE_CANCEL}
 
 
 class PrivateChatClient:
     def __init__(self, transport: SocketTransport, *, timeout: float = 5.0,
                  on_message: Callable[[Message], None],
                  on_disconnect: Callable[[], None] | None = None,
-                 transfer_events: queue.Queue | None = None) -> None:
+                 transfer_events: queue.Queue | None = None,
+                 download_dir: Path | str = 'downloads') -> None:
         self.transport = transport
+        self.download_dir = Path(download_dir)
         self.timeout = timeout
         self.on_message = on_message
         self.on_disconnect = on_disconnect
@@ -40,6 +48,8 @@ class PrivateChatClient:
                                 else queue.Queue(maxsize=128))
         self._lock = threading.Lock()
         self._pending: dict[str, queue.Queue[Message | BaseException]] = {}
+        self._offers: dict[str, Message] = {}  # incoming offers awaiting accept/reject
+        self._transfers: dict[str, SendSession | Receiver] = {}  # live transfers
         self._error = None
         self._stopped = threading.Event()
         self._cleanup_done = threading.Event()
@@ -53,6 +63,10 @@ class PrivateChatClient:
                 self._error = error
                 pending = list(self._pending.values())
                 self._pending.clear()
+                # Clear first so connection_lost() below reports nothing:
+                # the caller is already told about the disconnect.
+                transfers = list(self._transfers.values())
+                self._transfers.clear()
                 self._stopped.set()
         if not first:
             # A concurrent reader/close must not notify disconnect before the
@@ -74,6 +88,8 @@ class PrivateChatClient:
             self._cleanup_done.set()
             for inbox in pending:
                 inbox.put_nowait(error)
+            for transfer in transfers:
+                transfer.connection_lost()  # stops sending; deletes partial downloads
 
     def _read_loop(self) -> None:
         try:
@@ -87,12 +103,9 @@ class PrivateChatClient:
                 if message.type in {MessageType.CHAT_PRIVATE, MessageType.CHAT_PUBLIC}:
                     self.on_message(message)
                     continue
-                if (message.type in {MessageType.FILE_OFFER, MessageType.FILE_ACCEPT, MessageType.FILE_REJECT}
+                if (message.type in FILE_TYPES
                         or message.type == MessageType.ERROR and 'transfer_id' in message.header):
-                    try:
-                        self.transfer_events.put_nowait(message)
-                    except queue.Full:
-                        raise LanLinkError(ErrorCode.QUEUE_FULL) from None
+                    self._handle_file(message)
                     continue
                 with self._lock:
                     ref = message.header.get('ref_request_id')
@@ -149,6 +162,57 @@ class PrivateChatClient:
     def send_public(self, text: str) -> Message:
         return self._request(build_chat_public(text), MessageType.CHAT_ACK)
 
+    def _event(self, item: Message | TransferSnapshot) -> None:
+        try:
+            self.transfer_events.put_nowait(item)
+        except queue.Full:
+            # Never drop transfer state silently: close the connection instead.
+            self._fail(LanLinkError(ErrorCode.QUEUE_FULL))
+
+    def _on_update(self, snapshot: TransferSnapshot) -> None:
+        """Engine callback: report a transfer's end once if it is still registered."""
+        if not snapshot.is_terminal:
+            return
+        with self._lock:
+            registered = self._transfers.pop(snapshot.transfer_id, None) is not None
+        if registered:
+            self._event(snapshot)
+
+    def _handle_file(self, message: Message) -> None:
+        """Reader thread: drive the engine for this transfer and report to the caller."""
+        transfer_id, kind = message.header['transfer_id'], message.type
+        with self._lock:
+            if kind == MessageType.FILE_OFFER:
+                self._offers[transfer_id] = message
+            transfer = self._transfers.get(transfer_id)
+            # Rejections and errors are reported as the raw message below, so
+            # unregister first to avoid a second report from _on_update.
+            if kind in {MessageType.FILE_REJECT, MessageType.ERROR}:
+                self._transfers.pop(transfer_id, None)
+        if isinstance(transfer, Receiver) and kind == MessageType.FILE_ACCEPT:
+            transfer = None  # The server's echo of our own acceptance.
+        if transfer is not None:
+            try:
+                # Receiver returns replies (e.g. FILE_RESULT); SendSession returns None.
+                for reply in transfer.handle_message(message) or []:
+                    self.transport.send(reply)
+            except TransferError:
+                pass  # The engine is now FAILED and _on_update reports it.
+            if kind == MessageType.FILE_ACCEPT:
+                threading.Thread(target=self._pump, args=(transfer,), daemon=True,
+                                 name='lanlink-file-sender').start()
+        if kind in {MessageType.FILE_OFFER, MessageType.FILE_ACCEPT,
+                    MessageType.FILE_REJECT, MessageType.ERROR}:
+            self._event(message)
+
+    def _pump(self, sender: SendSession) -> None:
+        """Send chunks and FILE_END on their own thread so the reader keeps reading."""
+        try:
+            for message in sender.outgoing():
+                self.transport.send(message)  # The write lock keeps frames whole.
+        except OSError:
+            sender.connection_lost()
+
     def _send_file(self, message: Message) -> None:
         with self._lock:
             if self._error is not None:
@@ -160,18 +224,43 @@ class PrivateChatClient:
             raise
 
     def offer_file(self, recipient: str, path: Path | str) -> str:
-        """Inspect/hash locally, send metadata only; decisions/errors are events."""
-        info = inspect_file(path, limits=self.transport.limits, cancel=self._stopped)
-        transfer_id = uuid4().hex
-        self._send_file(build_file_offer(transfer_id, recipient, info.name, info.size,
-                                        info.sha256, self.transport.limits.max_chunk_bytes,
-                                        limits=self.transport.limits))
-        return transfer_id
+        """Hash the file locally and send the offer; chunks follow once it is accepted."""
+        limits = self.transport.limits
+        info = inspect_file(path, limits=limits, cancel=self._stopped)
+        sender = SendSession(info, recipient, limits=limits, on_update=self._on_update)
+        offer = sender.offer_message()
+        with self._lock:
+            self._transfers[sender.transfer_id] = sender
+        self._send_file(offer)
+        return sender.transfer_id
+
+    def _take_offer(self, transfer_id: str) -> Message | None:
+        with self._lock:
+            if transfer_id in self._transfers:
+                raise LanLinkError(ErrorCode.TRANSFER_STATE)  # Already running here.
+            return self._offers.pop(transfer_id, None)
 
     def accept_file(self, transfer_id: str) -> None:
-        self._send_file(build_file_accept(transfer_id))
+        offer = self._take_offer(transfer_id)
+        if offer is None:
+            # Not offered to us: send anyway and let the server report the error.
+            self._send_file(build_file_accept(transfer_id))
+            return
+        limits = self.transport.limits
+        receiver = Receiver(IncomingOffer.from_message(offer, limits=limits), self.download_dir,
+                            limits=limits, on_update=self._on_update)
+        try:
+            accept = receiver.accept()  # Reserves the file name and opens the .part file.
+        except TransferError:
+            self._send_file(build_file_reject(transfer_id))  # We cannot store it.
+            raise
+        # Register before sending FILE_ACCEPT, so the first chunk finds the receiver.
+        with self._lock:
+            self._transfers[transfer_id] = receiver
+        self._send_file(accept)
 
     def reject_file(self, transfer_id: str, reason: str | None = None) -> None:
+        self._take_offer(transfer_id)
         self._send_file(build_file_reject(transfer_id, reason))
 
     def users(self) -> list[dict[str, Any]]:
