@@ -1,4 +1,7 @@
-"""Bounded TCP server (optionally TLS): authentication, chat routing and file transfer."""
+"""Bounded TCP server (optionally TLS): authentication, chat routing and file transfer.
+
+A UDP socket on the same port number answers DISCOVER so clients can find the server.
+"""
 from dataclasses import asdict, dataclass, field, replace
 import ipaddress
 import math
@@ -12,8 +15,9 @@ from common.errors import ErrorCode, ProtocolError, user_message
 from common.handshake import accept_hello
 from common.models import (ConnectionState, Message, MessageType, TransferStatus, UserInfo,
                            check_transition, is_terminal)
-from common.protocol import (Direction, build_auth_ok, build_chat_ack, build_error,
-                             build_message, build_user_list)
+from common.protocol import (DEFAULT_LIMITS, Direction, build_auth_ok, build_chat_ack, build_error,
+                             build_message, build_server_info, build_user_list, decode_datagram,
+                             encode_message)
 from common.transport import SocketTransport
 from server.auth import CredentialStore
 
@@ -87,9 +91,19 @@ class TCPServer:
             self._listener.listen(max_clients)
             self._listener.settimeout(0.1)
             self.address = self._listener.getsockname()
+            # UDP discovery uses the TCP port number; 0.0.0.0 also receives broadcasts.
+            self._discovery = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                self._discovery.bind((address, self.address[1]))
+                self._discovery.settimeout(0.1)  # wake up to notice shutdown
+            except BaseException:
+                self._discovery.close()
+                raise
         except BaseException:
             self._listener.close()
             raise
+        self._discovery_thread = threading.Thread(target=self._answer_discovery,
+                                                  name='lanlink-discovery', daemon=True)
 
     def connections(self) -> dict[str, Connection]:
         """Return copies of records under the registry lock."""
@@ -108,6 +122,7 @@ class TCPServer:
             return {key: replace(value) for key, value in self._transfers.items()}
 
     def serve_forever(self) -> None:
+        self._discovery_thread.start()
         try:
             while not self._stopping.is_set():
                 try:
@@ -134,6 +149,30 @@ class TCPServer:
                         raise
         finally:
             self.shutdown()
+
+    def _answer_discovery(self) -> None:
+        """UDP thread: answer each DISCOVER with SERVER_INFO (name, TCP port, TLS on/off).
+
+        The client takes the server's IP from the datagram's source address.
+        """
+        while not self._stopping.is_set():
+            try:
+                # One byte over the limit, so decode_datagram can reject oversize data.
+                data, sender = self._discovery.recvfrom(DEFAULT_LIMITS.max_datagram_bytes + 1)
+            except socket.timeout:
+                continue
+            except OSError:
+                return  # closed by shutdown()
+            try:
+                request = decode_datagram(data)  # only a valid DISCOVER passes
+            except ProtocolError:
+                continue  # UDP has no session to report errors on: ignore junk
+            reply = build_server_info(request.header['request_id'], 'LanLink', self.address[1],
+                                      tls=self.tls is not None)
+            try:
+                self._discovery.sendto(encode_message(reply), sender)
+            except OSError:
+                pass
 
     def _serve_client(self, key: str, connection: socket.socket) -> None:
         """Worker thread for one connection: HELLO, then the message loop, then cleanup.
@@ -556,6 +595,10 @@ class TCPServer:
         except OSError:
             pass
         self._listener.close()
+        self._discovery.close()
+        if (self._discovery_thread.ident is not None
+                and self._discovery_thread is not threading.current_thread()):
+            self._discovery_thread.join()
         for record in records:
             try:
                 record.socket.shutdown(socket.SHUT_RDWR)

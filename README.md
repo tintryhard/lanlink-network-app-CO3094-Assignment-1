@@ -89,6 +89,13 @@ python -m server --host 0.0.0.0 --port 5000 --users data/users.json --cert certs
 python -m client --host <server-ip> --port 5000 --username alice --cafile certs/server.crt
 ```
 
+To find the server without knowing its IP, broadcast a UDP discovery request
+(the server answers on the same port number as TCP):
+
+```bash
+python -m client --discover --port 5000   # e.g. "LanLink at 192.168.1.9:5000 (TLS)"
+```
+
 The client trusts exactly that certificate (pinning), so only the holder of the
 server key can complete the handshake. The host name is not checked because a
 LAN server's IP may change.

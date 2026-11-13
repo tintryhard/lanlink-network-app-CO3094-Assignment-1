@@ -1,4 +1,4 @@
-"""CLI client: TCP (or TLS) handshake, login, chat and file transfer."""
+"""CLI client: UDP server discovery, TCP (or TLS) handshake, login, chat and file transfer."""
 import argparse
 import getpass
 import ipaddress
@@ -9,15 +9,45 @@ import queue
 import socket
 import sys
 import threading
+import time
 from typing import Any
 
 from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.handshake import initiate_hello
 from common.models import Message, MessageType, TransferSnapshot, TransferStatus
-from common.protocol import Direction, build_auth, build_logout, build_user_list
+from common.protocol import (DEFAULT_LIMITS, Direction, build_auth, build_discover, build_logout,
+                             build_user_list, decode_datagram, encode_message)
 from common.tls import client_context
 from common.transport import SocketTransport
 from client.private_chat import PrivateChatClient
+
+
+def discover_servers(port: int, wait: float = 2.0,
+                     address: str = '255.255.255.255') -> list[dict[str, Any]]:
+    """Broadcast a UDP DISCOVER and collect SERVER_INFO replies for `wait` seconds.
+
+    Returns one dict per server: name, ip, port (TCP) and tls.
+    """
+    request = build_discover()
+    servers = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+        udp.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        udp.sendto(encode_message(request), (address, port))
+        deadline = time.monotonic() + wait
+        while (remaining := deadline - time.monotonic()) > 0:
+            udp.settimeout(remaining)
+            try:
+                data, (ip, _) = udp.recvfrom(DEFAULT_LIMITS.max_datagram_bytes + 1)
+            except socket.timeout:
+                break
+            try:
+                reply = decode_datagram(data, direction=Direction.UDP_REPLY)
+            except ProtocolError:
+                continue  # not a valid SERVER_INFO: ignore
+            if reply.header['ref_request_id'] == request.header['request_id']:
+                servers.append({'name': reply.header['server_name'], 'ip': ip,
+                                'port': reply.header['port'], 'tls': reply.header['tls']})
+    return servers
 
 
 def _connect(host: str, port: int, timeout: float, cafile: str | None = None) -> socket.socket:
@@ -230,11 +260,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--port', type=int, default=5000)
     parser.add_argument('--timeout', type=float, default=5.0)
     parser.add_argument('--username', help='Prompt for password, show users and remain logged in')
+    parser.add_argument('--discover', action='store_true',
+                        help='Find LanLink servers on the LAN (UDP broadcast to --port) and exit')
     parser.add_argument('--cafile', help="Server's TLS certificate (PEM); required for a non-localhost host")
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error('--timeout must be positive and finite')
     try:
+        if args.discover:
+            servers = discover_servers(args.port)
+            for server in servers:
+                print(f'{server["name"]} at {server["ip"]}:{server["port"]}'
+                      f'{" (TLS)" if server["tls"] else ""}')
+            if not servers:
+                print('No server found')
+            return 0
         if args.username:
             login_cli(args.host, args.port, args.username, args.timeout, args.cafile)
             return 0

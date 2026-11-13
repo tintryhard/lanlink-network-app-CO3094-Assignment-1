@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from client.__main__ import _connect, authenticate, connect_hello
+from client.__main__ import _connect, authenticate, connect_hello, discover_servers
 from client.private_chat import PrivateChatClient
 from common.handshake import initiate_hello
 from common.models import MessageType, TransferStatus
@@ -81,3 +81,9 @@ def test_lan_bind_and_connect_require_tls(cert):
         TCPServer(host='0.0.0.0', port=0)
     with pytest.raises(ValueError, match='--cafile'):
         _connect('192.0.2.1', 5000, 1)  # refused before any packet is sent
+
+
+def test_discovery_reports_tls(cert):
+    with running(tls=server_context(*cert)) as server:
+        servers = discover_servers(server.address[1], 1, address='127.0.0.1')
+        assert [s['tls'] for s in servers] == [True]
