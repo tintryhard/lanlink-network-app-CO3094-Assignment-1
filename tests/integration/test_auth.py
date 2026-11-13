@@ -266,7 +266,7 @@ def test_cli_create_account_login_list_and_logout(tmp_path, monkeypatch, capsys)
         wait_until(lambda: not server.users())
     output = capsys.readouterr()
     assert 'Authenticated as demo' in output.out
-    assert '"username": "demo"' in output.out
+    assert 'demo' in output.out and 'Online users (1):' in output.out
     assert password not in output.out + output.err
 
 

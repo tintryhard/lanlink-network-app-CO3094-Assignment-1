@@ -14,7 +14,7 @@ from typing import Any
 
 from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.handshake import initiate_hello
-from common.models import Message, MessageType, TransferSnapshot, TransferStatus
+from common.models import Message, MessageType, TransferDirection, TransferSnapshot, TransferStatus
 from common.protocol import (DEFAULT_LIMITS, Direction, build_auth, build_discover, build_logout,
                              build_user_list, decode_datagram, encode_message)
 from common.tls import client_context
@@ -100,6 +100,24 @@ def request_users(transport: SocketTransport) -> list[dict[str, Any]]:
     return json.loads(reply.payload)['users']
 
 
+def format_users(users: list[dict[str, Any]], me: str) -> str:
+    """Render the USER_LIST payload as one line per online user."""
+    lines = [f'Online users ({len(users)}):']
+    for user in users:
+        you = ' (you)' if user['username'] == me else ''
+        lines.append(f'  {user["username"]:<20} {user["ip"]}:{user["port"]}{you}')
+    return '\n'.join(lines)
+
+
+def format_progress(snapshot: TransferSnapshot, width: int = 20) -> str:
+    """Render a text progress bar such as `[#####...............]  25% a.txt 256/1024 B`."""
+    done = int(snapshot.fraction * width)
+    arrow = 'to' if snapshot.direction == TransferDirection.SEND else 'from'
+    return (f'[{"#" * done}{"." * (width - done)}] {snapshot.fraction:4.0%} '
+            f'{snapshot.filename} {arrow} {snapshot.peer} '
+            f'{snapshot.processed_bytes}/{snapshot.total_bytes} B')
+
+
 def _read_command(prompt: str) -> str:
     """Read a line without holding stdin's buffered lock during interpreter exit."""
     print(prompt, end='', flush=True)
@@ -120,9 +138,10 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
     with _connect(host, port, timeout, cafile) as connection:
         transport = SocketTransport(connection, direction=Direction.SERVER_TO_CLIENT)
         initiate_hello(transport)
+        print(f'Connected to {host}:{port} ({"TLS" if cafile else "plaintext, localhost only"})')
         authenticate(transport, username, getpass.getpass('Password: '))
         print(f'Authenticated as {username}')
-        
+
         def display(message: Message) -> None:
             recipient = 'all' if message.type == MessageType.CHAT_PUBLIC else username
             print(f'\n[{message.header["sender"]} -> {recipient}] '
@@ -137,6 +156,10 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
             commands.put_nowait(None)
             read_next.set()
             print('\nDisconnected.', flush=True)
+
+        def show_progress(snapshot: TransferSnapshot) -> None:
+            # \r rewrites the same line, so the bar grows in place.
+            print(f'\r{format_progress(snapshot)}', end='', flush=True)
 
         def read_commands() -> None:
             while True:
@@ -156,9 +179,10 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
                 commands.put_nowait(command)
 
         client = PrivateChatClient(transport, timeout=timeout, on_message=display,
-                                   on_disconnect=notify_disconnect, transfer_events=commands)
+                                   on_disconnect=notify_disconnect, transfer_events=commands,
+                                   on_progress=show_progress)
         try:
-            print(json.dumps({'users': client.users()}, ensure_ascii=False, indent=2))
+            print(format_users(client.users(), username))
             help_text = ('Commands: /msg USER TEXT, /all TEXT, /offer USER PATH, '
                          '/accept ID, /reject ID [REASON], /users (or Enter), /logout')
             print(help_text)
@@ -180,7 +204,8 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
                         result = f'completed, {command.peer} verified the file'
                     else:
                         result = f'{command.status.value}: {command.error.message if command.error else ""}'
-                    print(f'\nFile {command.transfer_id} ({command.filename}) {result}', flush=True)
+                    print(f'\n{format_progress(command)}\nFile {command.transfer_id} '
+                          f'({command.filename}) {result}', flush=True)
                     continue
                 if isinstance(command, Message):
                     transfer_id = command.header['transfer_id']
@@ -199,7 +224,7 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
                         client.logout()
                         return
                     if command in {'', 'users', '/users'}:
-                        print(json.dumps({'users': client.users()}, ensure_ascii=False, indent=2))
+                        print(format_users(client.users(), username))
                     elif command.startswith('/msg '):
                         recipient, separator, text = command[5:].partition(' ')
                         if not separator or not text:

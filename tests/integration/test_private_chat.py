@@ -631,7 +631,7 @@ def test_cli_termination_and_cleanup(accounts, mode):
                     process.stdin.write(f'/msg {"x" * 33} hello\n/msg offline hello\n/users\n')
                     process.stdin.flush()
                     wait_until(lambda: ''.join(output).count('Request failed:') == 2 and
-                               ''.join(output).count('"username": "alice"') >= 2)
+                               ''.join(output).count('Online users (1):') >= 2)
                     assert process.poll() is None
                     assert 'alice' in server.users()
                     server.shutdown()

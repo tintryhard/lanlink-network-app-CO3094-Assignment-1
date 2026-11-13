@@ -36,12 +36,14 @@ class PrivateChatClient:
                  on_message: Callable[[Message], None],
                  on_disconnect: Callable[[], None] | None = None,
                  transfer_events: queue.Queue | None = None,
+                 on_progress: Callable[[TransferSnapshot], None] | None = None,
                  download_dir: Path | str = 'downloads') -> None:
         self.transport = transport
         self.download_dir = Path(download_dir)
         self.timeout = timeout
         self.on_message = on_message
         self.on_disconnect = on_disconnect
+        self.on_progress = on_progress  # called with throttled, non-final snapshots
         # File decisions are asynchronous. The reader only enqueues; callers
         # decide on their own thread, never while holding up the socket reader.
         self.transfer_events = (transfer_events if transfer_events is not None
@@ -183,8 +185,10 @@ class PrivateChatClient:
             self._close_with_error(LanLinkError(ErrorCode.QUEUE_FULL))
 
     def _report_transfer_end(self, snapshot: TransferSnapshot) -> None:
-        """Engine callback: report a transfer's end once, if it is still registered."""
+        """Engine callback: show progress, and report a transfer's end once if still registered."""
         if not snapshot.is_terminal:
+            if self.on_progress is not None:
+                self.on_progress(snapshot)
             return
         with self._lock:
             registered = self._transfers.pop(snapshot.transfer_id, None) is not None
