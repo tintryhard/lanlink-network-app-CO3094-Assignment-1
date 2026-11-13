@@ -9,12 +9,14 @@ import threading
 
 import pytest
 
-from client.__main__ import authenticate, main as client_main, request_users
+from client.connection import authenticate, request_users
+from client.__main__ import main as client_main
 from common.errors import ErrorCode
 from common.handshake import initiate_hello
 from common.models import ConnectionState, MessageType
-from common.protocol import (Direction, build_auth, build_chat_public, build_hello,
-                             build_logout, build_user_list, encode_message)
+from common.protocol import Direction, encode_message
+from common.builders import (build_auth, build_chat_public, build_hello, build_logout,
+                             build_user_list)
 from common.transport import SocketTransport
 from server.app import TCPServer
 from server.auth import CredentialStore, main as credentials_main, save_user

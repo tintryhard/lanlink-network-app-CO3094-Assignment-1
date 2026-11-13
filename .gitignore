@@ -29,6 +29,6 @@ data/
 downloads/
 logs/
 
-Specification files
+# Specification files
 Spec.md
 Task.md

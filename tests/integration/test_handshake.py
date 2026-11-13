@@ -5,13 +5,19 @@ import socket
 
 import pytest
 
-from client.__main__ import connect_hello
+from client.connection import connect_hello
 from common.errors import ErrorCode, ProtocolError
 from common.models import MessageType
-from common.protocol import (Direction, build_hello, build_hello_ack, build_ping,
-                             encode_message)
+from common.protocol import Direction, encode_message
+from common.builders import build_hello, build_hello_ack, build_ping
 from common.transport import SocketTransport
-from server.__main__ import handle_connection
+from common.handshake import accept_hello
+
+
+def handle_connection(connection: socket.socket):
+    """Minimal server side: answer one HELLO, then close the socket."""
+    with connection:
+        return accept_hello(SocketTransport(connection, direction=Direction.CLIENT_TO_SERVER))
 
 
 @contextmanager

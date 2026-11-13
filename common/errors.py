@@ -3,6 +3,7 @@ from enum import Enum
 
 
 class ErrorCode(str, Enum):
+    """Stable error codes; they appear on the wire in ERROR and FILE_RESULT messages."""
     BAD_FRAME = "BAD_FRAME"
     HEADER_TOO_LARGE = "HEADER_TOO_LARGE"
     PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
@@ -87,6 +88,7 @@ def user_message(code: ErrorCode) -> str:
 class LanLinkError(Exception):
     """Business failure with a stable code and a password-free message."""
     def __init__(self, code: ErrorCode, message: str | None = None) -> None:
+        """Store the code; the message defaults to the code's user-facing text."""
         self.code = ErrorCode(code)
         self.message = message or user_message(self.code)
         super().__init__(self.message)

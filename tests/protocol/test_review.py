@@ -89,7 +89,7 @@ def test_huge_input_prefix_and_empty_feeds_stay_bounded():
 
 
 def test_recursive_immutability_and_header_control_policy():
-    from common.protocol import build_hello_ack, build_chat_public
+    from common.builders import build_hello_ack, build_chat_public
     message = build_hello_ack('r', 'name')
     with pytest.raises(TypeError): message.header['limits']['max_chunk_bytes'] = 1
     assert build_chat_public('new\nline\u0085').payload.decode() == 'new\nline\u0085'

@@ -14,14 +14,16 @@ from typing import Callable
 
 from common.errors import ErrorCode, ProtocolError, TransferError
 from common.models import ErrorInfo, Message, TransferDirection, TransferSnapshot, TransferStatus, check_transition
-from common.protocol import (DEFAULT_LIMITS, MessageType, build_file_accept, build_file_reject,
-                             build_file_result, build_file_cancel, validate_message)
+from common.protocol import DEFAULT_LIMITS, MessageType, validate_message
+from common.builders import (build_file_accept, build_file_reject, build_file_result,
+                             build_file_cancel)
 from transfer.paths import fit_filename, io_error, reserve_destination, sanitize_filename
 from transfer.progress import ProgressThrottle, UpdatePublisher
 
 
 @dataclass(frozen=True)
 class IncomingOffer:
+    """The fields of a received FILE_OFFER that the receiver needs."""
     transfer_id: str
     sender: str
     filename: str
@@ -36,16 +38,20 @@ class IncomingOffer:
         checked = validate_message(msg.header, msg.payload, limits, Direction.SERVER_TO_CLIENT)
         if checked.type != MessageType.FILE_OFFER:
             raise TransferError(ErrorCode.TRANSFER_STATE)
+        # Take the header fields in the dataclass's field order.
         return cls(*(checked.header[name] for name in cls.__dataclass_fields__))
 
 
 class Receiver:
+    """Receive one file: write chunks to a .part file, then verify size and SHA-256 and rename it."""
     def __init__(self, offer: IncomingOffer, download_dir: Path | str, *, limits=DEFAULT_LIMITS,
                  on_update: Callable[[TransferSnapshot], None] = lambda s: None,
                  clock: Callable[[], float] = time.monotonic, idle_timeout_s: float = 30):
+        """Prepare a receiver for `offer` in the OFFERED state; nothing is written until accept()."""
         self.offer, self.download_dir, self.limits = offer, Path(download_dir), limits
         self.clock, self.on_update, self.idle_timeout_s = clock, on_update, idle_timeout_s
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # reentrant: an engine method may call another under the lock
+        # The lambda looks up self.on_update at call time, so the callback can be replaced later.
         self._updates = UpdatePublisher(self._lock, lambda snap: self.on_update(snap))
         self._fd = None
         self._part = None
@@ -62,11 +68,13 @@ class Receiver:
 
     @property
     def snapshot(self) -> TransferSnapshot:
+        """Current TransferSnapshot (read under the lock)."""
         with self._lock:
             return self._snapshot
 
     @property
     def part_path(self) -> Path | None:
+        """Path of the temporary .part file, or None before accept()."""
         return self._part
 
     def _queue_snapshot(self) -> None:
@@ -236,7 +244,7 @@ class Receiver:
                 self._fd = None
                 if not self._owns_reservation():
                     raise TransferError(ErrorCode.PERMISSION_DENIED)
-                os.replace(self._part, self._reserved)
+                os.replace(self._part, self._reserved)  # atomic: the final name appears only when verified
                 saved_path = str(self._reserved)
                 self._part = self._reserved = None
                 self._change_status(TransferStatus.COMPLETED, saved_path=saved_path)

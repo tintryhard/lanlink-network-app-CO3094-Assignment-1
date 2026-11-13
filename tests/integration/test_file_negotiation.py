@@ -12,11 +12,13 @@ from uuid import uuid4
 
 import pytest
 
-from client.__main__ import authenticate, main as client_main
+from client.connection import authenticate
+from client.__main__ import main as client_main
 from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.models import MessageType, TransferStatus
-from common.protocol import (DEFAULT_LIMITS, build_file_accept, build_file_chunk, build_file_end,
-                             build_file_offer, build_file_reject, build_user_list, encode_message)
+from common.protocol import DEFAULT_LIMITS, encode_message
+from common.builders import (build_file_accept, build_file_chunk, build_file_end, build_file_offer,
+                             build_file_reject, build_user_list)
 from tests.integration.test_auth import exchange_error, open_client
 from tests.integration.test_concurrency import running, wait_until
 from tests.integration.test_private_chat import accounts, async_login, login

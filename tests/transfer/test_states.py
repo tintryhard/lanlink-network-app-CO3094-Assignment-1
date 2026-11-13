@@ -1,4 +1,4 @@
-"""Exhaustive state graph and the exact shared snapshot/event contract."""
+"""Exhaustive state graph and the exact shared snapshot contract."""
 from dataclasses import fields, FrozenInstanceError
 import pytest
 import common.models as models
@@ -36,6 +36,3 @@ def test_exact_contract():
     with pytest.raises(FrozenInstanceError):
         snap.status=S.COMPLETED
     assert models.TransferSnapshot('a'*32,models.TransferDirection.RECEIVE,'an','x',0,0,S.COMPLETED).fraction==1
-    for name in ('ConnectionChanged','AuthResult','UsersChanged','MessageReceived','MessageStatusChanged',
-                 'FileOffered','TransferUpdated','OperationFailed'):
-        assert getattr(models,name).__dataclass_params__.frozen

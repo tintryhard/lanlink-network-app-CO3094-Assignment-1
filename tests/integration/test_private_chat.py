@@ -15,12 +15,14 @@ import time
 
 import pytest
 
-from client.__main__ import authenticate, main as client_main, request_users
+from client.connection import authenticate, request_users
+from client.__main__ import main as client_main
 from client.private_chat import PrivateChatClient
 from common.errors import ErrorCode, LanLinkError, ProtocolError
 from common.models import Message, MessageType
-from common.protocol import (Direction, build_chat_ack, build_chat_private, build_chat_public,
-                             build_error, build_user_list, encode_message)
+from common.protocol import Direction, encode_message
+from common.builders import (build_chat_ack, build_chat_private, build_chat_public, build_error,
+                             build_user_list)
 from common.transport import SocketTransport
 from server.app import TCPServer
 from server.auth import CredentialStore, save_user

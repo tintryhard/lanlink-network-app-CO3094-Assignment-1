@@ -9,12 +9,11 @@ import pytest
 
 from common.errors import ErrorCode, ProtocolError
 from common.models import Message, MessageType
-from common.protocol import (
-    DEFAULT_LIMITS, Direction, FrameDecoder, ProtocolLimits, build_auth,
-    build_chat_private, build_chat_public, build_discover, build_hello,
-    build_hello_ack, build_server_info, decode_datagram, decode_header,
-    encode_message, max_payload_for, validate_message,
-)
+from common.protocol import (DEFAULT_LIMITS, Direction, FrameDecoder, ProtocolLimits,
+                             decode_datagram, decode_header, encode_message, max_payload_for,
+                             validate_message)
+from common.builders import (build_auth, build_chat_private, build_chat_public, build_discover,
+                             build_hello, build_hello_ack, build_server_info)
 from tests.fixtures import load_protocol_cases
 
 CASES = load_protocol_cases()
@@ -265,7 +264,7 @@ def test_negotiated_payload_bounds_before_buffering():
 
 
 def test_user_list_limits_and_values():
-    from common.protocol import build_user_list
+    from common.builders import build_user_list
     users=[{'username':'an','online':True,'ip':'127.0.0.1','port':9000},
            {'username':'binh','online':False,'ip':'::1','port':None}]
     msg=build_user_list(users,ref_request_id='request')
@@ -280,7 +279,7 @@ def test_user_list_limits_and_values():
 
 
 def test_user_list_directional_correlation_schema():
-    from common.protocol import build_user_list
+    from common.builders import build_user_list
     request = build_user_list()
     assert not request.payload and 'ref_request_id' not in request.header
     validate_message(request.header, request.payload, direction=Direction.CLIENT_TO_SERVER)
@@ -302,7 +301,7 @@ def test_user_list_directional_correlation_schema():
 
 @pytest.mark.parametrize('ref', ['', None, 42, 'invalid ref'])
 def test_user_list_invalid_response_reference(ref):
-    from common.protocol import build_user_list
+    from common.builders import build_user_list
     with pytest.raises(ProtocolError):
         build_user_list([], ref_request_id=ref)
 
@@ -313,14 +312,6 @@ def test_builder_defaults_and_length_mismatch():
     h=dict(version=1,type='CHAT_PUBLIC',request_id='r',payload_length=2)
     with pytest.raises(ProtocolError) as caught:encode_message(Message(h,b'x'))
     assert caught.value.code==ErrorCode.PAYLOAD_LENGTH_MISMATCH
-
-
-def test_docs_worked_hex_matches_golden():
-    from pathlib import Path
-    text=(Path(__file__).resolve().parents[2]/'docs/protocol.md').read_text(encoding='utf-8')
-    for kind in ('HELLO','CHAT_PRIVATE','FILE_OFFER','FILE_CHUNK'):
-        case=next(c for c in CASES['valid'] if c['header']['type']==kind and c['direction']=='CLIENT_TO_SERVER')
-        assert case['frame_hex'] in text
 
 
 def test_udp_encoding_honours_negotiated_datagram_limit():

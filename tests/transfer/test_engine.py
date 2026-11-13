@@ -13,7 +13,8 @@ import pytest
 
 from common.errors import ErrorCode as E, TransferError
 from common.models import Message, TransferStatus as S
-from common.protocol import DEFAULT_LIMITS, build_file_accept, build_file_result, MessageType
+from common.protocol import DEFAULT_LIMITS, MessageType
+from common.builders import build_file_accept, build_file_result
 from tests.fakes.fake_transport import FakeRelay
 from transfer.paths import reserve_destination, sanitize_filename
 from transfer.progress import ProgressThrottle

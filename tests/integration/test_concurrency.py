@@ -10,7 +10,8 @@ import pytest
 
 from common.handshake import initiate_hello
 from common.models import ConnectionState
-from common.protocol import Direction, build_ping
+from common.protocol import Direction
+from common.builders import build_ping
 from common.transport import SocketTransport
 from server.app import TCPServer
 

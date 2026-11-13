@@ -7,7 +7,8 @@ import subprocess
 
 import pytest
 
-from client.__main__ import _connect, authenticate, connect_hello, discover_servers
+from client.connection import open_connection, authenticate, connect_hello
+from client.discovery import discover_servers
 from client.private_chat import PrivateChatClient
 from common.handshake import initiate_hello
 from common.models import MessageType, TransferStatus
@@ -36,7 +37,7 @@ def cert(tmp_path_factory):
 
 
 def tls_client(stack, server, accounts, name, cafile):
-    connection = stack.enter_context(_connect('127.0.0.1', server.address[1], 3, cafile))
+    connection = stack.enter_context(open_connection('127.0.0.1', server.address[1], 3, cafile))
     transport = SocketTransport(connection, direction=Direction.SERVER_TO_CLIENT)
     initiate_hello(transport)
     authenticate(transport, name, accounts[1][name])
@@ -80,7 +81,7 @@ def test_lan_bind_and_connect_require_tls(cert):
     with pytest.raises(ValueError, match='loopback'):
         TCPServer(host='0.0.0.0', port=0)
     with pytest.raises(ValueError, match='--cafile'):
-        _connect('192.0.2.1', 5000, 1)  # refused before any packet is sent
+        open_connection('192.0.2.1', 5000, 1)  # refused before any packet is sent
 
 
 def test_discovery_reports_tls(cert):

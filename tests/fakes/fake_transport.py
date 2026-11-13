@@ -3,7 +3,8 @@ from dataclasses import replace
 from typing import Callable
 
 from common.models import Message
-from common.protocol import Direction, FrameDecoder, MessageType, encode_message, build_file_result
+from common.protocol import Direction, FrameDecoder, MessageType, encode_message
+from common.builders import build_file_result
 from common.errors import TransferError
 from transfer.receiver import IncomingOffer, Receiver
 

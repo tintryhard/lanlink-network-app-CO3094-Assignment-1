@@ -15,8 +15,8 @@ from common.models import MessageType
 from transfer.paths import sanitize_filename
 from transfer.progress import ProgressThrottle
 from common.errors import ErrorCode as E, TransferError
-from common.protocol import (build_file_accept, build_file_end, build_file_result,
-                             build_error, build_file_chunk)
+from common.builders import (build_file_accept, build_file_end, build_file_result, build_error,
+                             build_file_chunk)
 from tests.fakes.fake_transport import FakeRelay
 from tests.transfer.test_engine import session
 

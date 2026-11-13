@@ -9,7 +9,8 @@ import pytest
 
 from common.errors import ErrorCode
 from common.models import MessageType, TransferStatus
-from common.protocol import DEFAULT_LIMITS, build_file_chunk, build_file_offer, build_file_result
+from common.protocol import DEFAULT_LIMITS
+from common.builders import build_file_chunk, build_file_offer, build_file_result
 from tests.integration.test_concurrency import running, wait_until
 from tests.integration.test_file_negotiation import event, offer
 from tests.integration.test_private_chat import accounts, async_login

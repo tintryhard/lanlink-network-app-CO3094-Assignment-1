@@ -1,1 +1,1 @@
-PySide6
+# The application uses only the Python standard library.

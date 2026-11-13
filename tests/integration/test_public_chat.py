@@ -7,10 +7,12 @@ import time
 
 import pytest
 
-from client.__main__ import authenticate, main as client_main
+from client.connection import authenticate
+from client.__main__ import main as client_main
 from common.errors import ErrorCode, ProtocolError
 from common.models import Message, MessageType
-from common.protocol import DEFAULT_LIMITS, build_chat_public, encode_message
+from common.protocol import DEFAULT_LIMITS, encode_message
+from common.builders import build_chat_public
 from tests.integration.test_auth import exchange_error, open_client
 from tests.integration.test_concurrency import running, wait_until
 from tests.integration.test_private_chat import accounts, async_login, login

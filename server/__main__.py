@@ -1,25 +1,15 @@
-"""Concurrent TCP server with local authentication."""
+"""Run the LanLink server: python -m server --host HOST --port PORT [--users FILE] [--cert C --key K]."""
 import argparse
 import math
-import socket
 import sys
 
 from server.app import TCPServer
 from server.auth import CredentialStore
-from common.handshake import accept_hello
-from common.models import Message
-from common.protocol import Direction
 from common.tls import server_context
-from common.transport import SocketTransport
-
-
-def handle_connection(connection: socket.socket) -> Message:
-    """Take ownership of an accepted socket and close it on every exit path."""
-    with connection:
-        return accept_hello(SocketTransport(connection, direction=Direction.CLIENT_TO_SERVER))
 
 
 def main(argv: list[str] | None = None) -> int | None:
+    """CLI entry point: parse options, build TCPServer (with TLS if --cert/--key) and run it until Ctrl+C."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=5000)

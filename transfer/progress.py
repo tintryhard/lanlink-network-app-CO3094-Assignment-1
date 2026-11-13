@@ -15,12 +15,15 @@ class UpdatePublisher:
     for a slow observer. Exceptions in observers cannot interrupt disk cleanup.
     """
     def __init__(self, lock, callback):
+        """`lock` is the engine's lock; `callback` receives each delivered snapshot."""
         self.lock, self.callback = lock, callback
         self._depth = 0
         self._pending = deque()
         self._delivering = False
         self.callback_failures = 0
 
+    # @contextmanager turns this generator into a `with` block: code before `yield`
+    # runs on entry, code after it on exit.
     @contextmanager
     def operation(self):
         """Hold the engine lock for one state change; deliver queued updates after release.
@@ -78,8 +81,10 @@ class UpdatePublisher:
 
 
 class ProgressThrottle:
+    """Limit how often progress snapshots reach the UI (status changes always pass)."""
     def __init__(self, min_interval_s: float = 0.1, min_delta_bytes: int = 1,
                  *, clock: Callable[[], float] = time.monotonic):
+        """Report progress at most every `min_interval_s` and after `min_delta_bytes` new bytes."""
         if min_interval_s < 0 or min_delta_bytes < 0:
             raise ValueError('Progress thresholds must be nonnegative')
         self.min_interval_s = min_interval_s

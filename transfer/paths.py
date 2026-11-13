@@ -22,6 +22,7 @@ def io_error(error: OSError, *, missing: ErrorCode = ErrorCode.FILE_NOT_FOUND) -
 
 
 def _utf8_prefix(text: str, budget: int) -> str:
+    """Cut `text` to at most `budget` UTF-8 bytes without splitting a character."""
     return text.encode('utf-8')[:max(0, budget)].decode('utf-8', errors='ignore')
 
 
@@ -70,6 +71,8 @@ def reserve_destination(download_dir: Path | str, name: str) -> tuple[Path, int]
             if candidate.parent.resolve() != directory:
                 raise TransferError(ErrorCode.UNSAFE_FILENAME)
             try:
+                # O_EXCL fails if the name exists, so two transfers never get the same file.
+                # O_NOFOLLOW refuses symlinks; getattr(..., 0) skips flags this OS lacks.
                 fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY
                              | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0), 0o600)
                 return candidate, fd

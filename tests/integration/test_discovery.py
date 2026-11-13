@@ -1,8 +1,10 @@
 """Stage 9: UDP discovery. A client finds the server with DISCOVER / SERVER_INFO."""
 import socket
 
-from client.__main__ import discover_servers, main as client_main
-from common.protocol import build_server_info, encode_message
+from client.discovery import discover_servers
+from client.__main__ import main as client_main
+from common.protocol import encode_message
+from common.builders import build_server_info
 from tests.integration.test_concurrency import running
 
 

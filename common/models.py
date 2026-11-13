@@ -1,4 +1,7 @@
-"""Qt-free shared values; immutable snapshots and events cross worker boundaries."""
+"""Shared values: message types, the Message record and transfer states.
+
+The records are frozen (immutable), so threads can pass them around safely.
+"""
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -7,6 +10,7 @@ from common.errors import ErrorCode, TransferError
 
 
 class MessageType(str, Enum):
+    """Every message type of protocol v1; the value is the wire string in the header's `type`."""
     HELLO = "HELLO"
     HELLO_ACK = "HELLO_ACK"
     AUTH = "AUTH"
@@ -31,6 +35,7 @@ class MessageType(str, Enum):
 
 
 def _freeze(value: Any) -> Any:
+    """Return a read-only copy: dicts become MappingProxyType, lists become tuples (recursively)."""
     if isinstance(value, Mapping):
         return MappingProxyType({k: _freeze(v) for k, v in value.items()})
     if isinstance(value, (list, tuple)):
@@ -45,30 +50,33 @@ class Message:
     payload: bytes = field(default=b"", repr=False)
 
     def __post_init__(self) -> None:
+        """Freeze the header so no thread can change a message after it is built."""
+        # A frozen dataclass forbids `self.header = ...`; object.__setattr__ bypasses that once.
         object.__setattr__(self, "header", _freeze(self.header))
 
     @property
     def type(self) -> MessageType:
+        """The header's `type` as a MessageType."""
         return MessageType(self.header["type"])
 
 
 class ConnectionState(str, Enum):
-    DISCONNECTED = "disconnected"
+    """Lifecycle of one server-side connection, from accept to close."""
     CONNECTING = "connecting"
-    TLS_ESTABLISHED = "tls_established"
     HELLO_ACCEPTED = "hello_accepted"
     AUTHENTICATED = "authenticated"
-    ACTIVE = "active"
     CLOSING = "closing"
     CLOSED = "closed"
 
 
 class TransferDirection(str, Enum):
+    """Whether this side sends or receives the file."""
     SEND = "send"
     RECEIVE = "receive"
 
 
 class TransferStatus(str, Enum):
+    """States of a file transfer; ALLOWED_TRANSITIONS lists the legal moves."""
     OFFERED = "offered"
     ACCEPTED = "accepted"
     TRANSFERRING = "transferring"
@@ -79,6 +87,7 @@ class TransferStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+# Legal next states for each status. Final states map to an empty set.
 ALLOWED_TRANSITIONS = MappingProxyType({
     TransferStatus.OFFERED: frozenset({TransferStatus.ACCEPTED, TransferStatus.REJECTED,
                                       TransferStatus.CANCELLED, TransferStatus.FAILED}),
@@ -96,22 +105,26 @@ ALLOWED_TRANSITIONS = MappingProxyType({
 
 
 def is_terminal(status: TransferStatus) -> bool:
+    """True for a final status (no further transition is allowed)."""
     return not ALLOWED_TRANSITIONS[status]
 
 
 def check_transition(old: TransferStatus, new: TransferStatus) -> None:
+    """Raise TransferError(TRANSFER_STATE) unless old -> new is a legal move."""
     if new not in ALLOWED_TRANSITIONS[old]:
         raise TransferError(ErrorCode.TRANSFER_STATE)
 
 
 @dataclass(frozen=True)
 class ErrorInfo:
+    """An error code with its human-readable message."""
     code: ErrorCode
     message: str
 
 
 @dataclass(frozen=True)
 class TransferSnapshot:
+    """Immutable picture of one transfer at a moment, handed to the UI."""
     transfer_id: str
     direction: TransferDirection
     peer: str
@@ -124,71 +137,21 @@ class TransferSnapshot:
 
     @property
     def fraction(self) -> float:
+        """Progress from 0.0 to 1.0; an empty file is 1.0 only once completed."""
         if self.total_bytes == 0:
             return 1.0 if self.status == TransferStatus.COMPLETED else 0.0
         return min(1.0, max(0.0, self.processed_bytes / self.total_bytes))
 
     @property
     def is_terminal(self) -> bool:
+        """True once the transfer has ended."""
         return is_terminal(self.status)
 
 
 @dataclass(frozen=True)
 class UserInfo:
+    """One entry of the USER_LIST payload."""
     username: str
     online: bool
     ip: str | None
     port: int | None
-
-
-@dataclass(frozen=True)
-class ConnectionChanged:
-    state: ConnectionState
-    error: ErrorInfo | None = None
-
-
-@dataclass(frozen=True)
-class AuthResult:
-    ok: bool
-    username: str
-    error: ErrorInfo | None = None
-
-
-@dataclass(frozen=True)
-class UsersChanged:
-    users: tuple[UserInfo, ...]
-
-
-@dataclass(frozen=True)
-class MessageReceived:
-    message_id: str
-    sender: str
-    recipient: str | None
-    text: str
-    timestamp_ms: int
-
-
-@dataclass(frozen=True)
-class MessageStatusChanged:
-    request_id: str
-    message_id: str
-    status: str
-    timestamp_ms: int
-
-
-@dataclass(frozen=True)
-class FileOffered:
-    snapshot: TransferSnapshot
-
-
-@dataclass(frozen=True)
-class TransferUpdated:
-    snapshot: TransferSnapshot
-
-
-@dataclass(frozen=True)
-class OperationFailed:
-    error: ErrorInfo
-    request_id: str | None = None
-    field: str | None = None
-    transfer_id: str | None = None

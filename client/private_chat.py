@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 from common.errors import ErrorCode, LanLinkError, ProtocolError, TransferError
 from common.models import Message, MessageType, TransferSnapshot
-from common.protocol import (build_chat_private, build_chat_public, build_file_accept,
+from common.builders import (build_chat_private, build_chat_public, build_file_accept,
                              build_file_reject, build_logout, build_user_list)
 from common.transport import SocketTransport
 from transfer.receiver import IncomingOffer, Receiver
@@ -32,12 +32,24 @@ FILE_TYPES = {MessageType.FILE_OFFER, MessageType.FILE_ACCEPT, MessageType.FILE_
 
 
 class PrivateChatClient:
+    """Logged-in client session: private and public chat, user list and file transfer.
+
+    (The name is historical; it handles public chat too.)
+    """
     def __init__(self, transport: SocketTransport, *, timeout: float = 5.0,
                  on_message: Callable[[Message], None],
                  on_disconnect: Callable[[], None] | None = None,
                  transfer_events: queue.Queue | None = None,
                  on_progress: Callable[[TransferSnapshot], None] | None = None,
                  download_dir: Path | str = 'downloads') -> None:
+        """Take over an authenticated transport and start the reader thread.
+
+        on_message: called for each incoming chat (on the reader thread).
+        on_disconnect: called once when the connection ends.
+        transfer_events: queue for file events; a new bounded queue if not given.
+        on_progress: called with progress snapshots of running transfers.
+        download_dir: where received files are saved.
+        """
         self.transport = transport
         self.download_dir = Path(download_dir)
         self.timeout = timeout
@@ -171,9 +183,11 @@ class PrivateChatClient:
         return reply
 
     def send_private(self, recipient: str, text: str) -> Message:
+        """Send a private message; returns the server's CHAT_ACK."""
         return self._request(build_chat_private(recipient, text), MessageType.CHAT_ACK)
 
     def send_public(self, text: str) -> Message:
+        """Send a message to every online user; returns the server's CHAT_ACK."""
         return self._request(build_chat_public(text), MessageType.CHAT_ACK)
 
     def _push_transfer_event(self, item: Message | TransferSnapshot) -> None:
@@ -264,6 +278,7 @@ class PrivateChatClient:
             return self._offers.pop(transfer_id, None)
 
     def accept_file(self, transfer_id: str) -> None:
+        """Accept an incoming offer: open a .part file, then send FILE_ACCEPT."""
         offer = self._pop_pending_offer(transfer_id)
         if offer is None:
             # Not offered to us: send anyway and let the server report the error.
@@ -283,14 +298,17 @@ class PrivateChatClient:
         self._send_or_close(accept)
 
     def reject_file(self, transfer_id: str, reason: str | None = None) -> None:
+        """Decline an incoming offer, with an optional reason."""
         self._pop_pending_offer(transfer_id)
         self._send_or_close(build_file_reject(transfer_id, reason))
 
     def users(self) -> list[dict[str, Any]]:
+        """Ask the server for the online users (list of {username, online, ip, port})."""
         reply = self._request(build_user_list(), MessageType.USER_LIST)
         return json.loads(reply.payload)['users']
 
     def logout(self) -> None:
+        """Send LOGOUT, wait for the server to close the connection, then clean up."""
         try:
             self.transport.send(build_logout())
             if not self._stopped.wait(self.timeout):
@@ -299,6 +317,7 @@ class PrivateChatClient:
             self.close()
 
     def close(self) -> None:
+        """Close the connection and wait for the reader thread to finish."""
         self._close_with_error(EOFError('Client closed'))
         if threading.current_thread() is not self._reader:
             self._reader.join()

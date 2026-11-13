@@ -12,17 +12,23 @@ from common.protocol import DEFAULT_LIMITS, Direction, FrameDecoder, ProtocolLim
 
 
 class SocketTransport:
+    """Send and receive whole Messages over one (TLS or plain) socket."""
     def __init__(self, connection: socket.socket, *, direction: Direction,
                  limits: ProtocolLimits = DEFAULT_LIMITS) -> None:
+        """Wrap `connection`; `direction` tells the decoder which message types are legal.
+
+        `read_deadline` (a time.monotonic() value) optionally bounds receive() during the handshake.
+        """
         self.connection = connection
         self.limits = limits
         self.decoder = FrameDecoder(limits, direction)
-        self._pending = deque()
+        self._pending = deque()  # decoded messages not yet returned by receive()
         self._eof = False
         self._write_lock = threading.Lock()
         self.read_deadline = None
 
     def send(self, message: Message) -> None:
+        """Encode and send one message. The lock keeps frames from two threads apart."""
         frame = encode_message(message, self.limits)
         with self._write_lock:
             self.connection.sendall(frame)
@@ -37,7 +43,7 @@ class SocketTransport:
                 if remaining <= 0:
                     raise TimeoutError("Handshake deadline expired")
                 self.connection.settimeout(remaining)
-            data = self.connection.recv(65536)
+            data = self.connection.recv(65536)  # up to 64 KiB; may hold part of a frame or several
             if not data:
                 self._eof = True
                 self.decoder.feed_eof()

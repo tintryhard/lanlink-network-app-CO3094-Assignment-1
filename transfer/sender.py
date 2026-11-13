@@ -16,14 +16,15 @@ from uuid import uuid4
 
 from common.errors import ErrorCode, TransferError, ProtocolError
 from common.models import ErrorInfo, Message, TransferDirection, TransferSnapshot, TransferStatus, check_transition
-from common.protocol import (DEFAULT_LIMITS, ProtocolLimits, MessageType, build_file_offer,
-                             build_file_chunk, build_file_end, build_file_cancel, validate_message)
+from common.protocol import DEFAULT_LIMITS, ProtocolLimits, MessageType, validate_message
+from common.builders import build_file_offer, build_file_chunk, build_file_end, build_file_cancel
 from transfer.paths import io_error, sanitize_filename
 from transfer.progress import ProgressThrottle, UpdatePublisher
 
 
 @dataclass(frozen=True)
 class FileInfo:
+    """Result of inspecting a file to send: path, safe name, size, SHA-256 and modification time."""
     path: Path
     name: str
     size: int
@@ -33,12 +34,14 @@ class FileInfo:
 
 @dataclass(frozen=True)
 class Chunk:
+    """One numbered piece of file content."""
     seq: int
     data: bytes
 
 
 def _is_cancel_requested(cancel) -> bool:
     """True if cancel (an Event or a callable) asks to stop; None means never."""
+    # Duck typing: a threading.Event has is_set(); anything else is called as a function.
     return bool(cancel.is_set() if hasattr(cancel, 'is_set') else cancel()) if cancel is not None else False
 
 
@@ -119,7 +122,7 @@ def iter_chunks(path: Path | str, *, chunk_size: int, expected: FileInfo | None 
                 if count > before.st_size:
                     raise TransferError(ErrorCode.SOURCE_CHANGED)
                 digest.update(data)
-                yield Chunk(seq, data)
+                yield Chunk(seq, data)  # generator: pauses here until the caller asks for the next chunk
                 seq += 1
             if not _same_file_state(before, os.fstat(source.fileno())):
                 raise TransferError(ErrorCode.SOURCE_CHANGED)
@@ -137,6 +140,7 @@ class SendSession:
                  chunk_size: int | None = None, on_update: Callable[[TransferSnapshot], None] = lambda s: None,
                  clock: Callable[[], float] = time.monotonic, accept_timeout_s: float = 60,
                  result_timeout_s: float = 30):
+        """Prepare to send `info` to `peer`; the session starts in the OFFERED state."""
         requested = limits.max_chunk_bytes if chunk_size is None else chunk_size
         if type(requested) is not int or requested < 1:
             raise TransferError(ErrorCode.INVALID_FIELD)
@@ -147,7 +151,8 @@ class SendSession:
         self.transfer_id = uuid4().hex
         self.clock, self.on_update = clock, on_update
         self.accept_timeout_s, self.result_timeout_s = accept_timeout_s, result_timeout_s
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # reentrant: an engine method may call another under the lock
+        # The lambda looks up self.on_update at call time, so the callback can be replaced later.
         self._updates = UpdatePublisher(self._lock, lambda snap: self.on_update(snap))
         self._cancel_event = threading.Event()
         self._chunks = None
@@ -161,6 +166,7 @@ class SendSession:
 
     @property
     def snapshot(self) -> TransferSnapshot:
+        """Current TransferSnapshot (read under the lock)."""
         with self._lock:
             return self._snapshot
 

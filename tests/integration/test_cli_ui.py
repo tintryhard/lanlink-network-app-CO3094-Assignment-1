@@ -2,7 +2,7 @@
 from contextlib import ExitStack
 import queue
 
-from client.__main__ import format_progress, format_users
+from client.display import format_progress, format_users
 from client.private_chat import PrivateChatClient
 from common.models import MessageType, TransferDirection, TransferSnapshot, TransferStatus
 from tests.integration.test_concurrency import running

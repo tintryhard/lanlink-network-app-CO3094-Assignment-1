@@ -1,4 +1,8 @@
-"""Protocol v1 contract. Pure codec: no sockets, disk I/O, TLS or Qt."""
+"""Protocol v1 codec: frame format, message schemas and validation. No socket I/O.
+
+Frame = 4-byte big-endian header length + UTF-8 JSON header + payload bytes
+(the header's payload_length says how many payload bytes follow).
+"""
 from dataclasses import asdict, dataclass
 from enum import Enum
 import ipaddress
@@ -7,7 +11,6 @@ import re
 import struct
 import unicodedata
 from typing import Any, Mapping
-from uuid import uuid4
 from common.errors import ErrorCode, ProtocolError
 from common.models import Message, MessageType
 
@@ -15,6 +18,10 @@ PROTOCOL_VERSION = 1
 
 
 class Direction(Enum):
+    """Who sends a message. The decoder uses it to reject types that may not travel that way.
+
+    ANY lets the validator guess the direction from the message itself (used by builders).
+    """
     CLIENT_TO_SERVER = "client_to_server"
     SERVER_TO_CLIENT = "server_to_client"
     UDP_REQUEST = "udp_request"
@@ -22,6 +29,7 @@ class Direction(Enum):
     ANY = "any"
 
 
+# Which party of a transfer may send each file message (checked by the server).
 FILE_MESSAGE_ROLES = {
     MessageType.FILE_OFFER: "sender", MessageType.FILE_CHUNK: "sender",
     MessageType.FILE_END: "sender", MessageType.FILE_ACCEPT: "receiver",
@@ -32,16 +40,18 @@ FILE_MESSAGE_ROLES = {
 
 @dataclass(frozen=True)
 class ProtocolLimits:
+    """Size and time limits shared by client and server (sent in HELLO_ACK)."""
     max_header_bytes: int = 16 * 1024
     max_chunk_bytes: int = 64 * 1024
     max_file_bytes: int = 100 * 1024 * 1024
     max_chat_bytes: int = 8 * 1024
     max_user_list_bytes: int = 64 * 1024
     max_datagram_bytes: int = 1024
-    heartbeat_interval_s: int = 15
+    heartbeat_interval_s: int = 15  # advertised in HELLO_ACK; no heartbeat is sent (not in the Spec rubric)
     idle_timeout_s: int = 45
 
     def __post_init__(self) -> None:
+        """Reject limits outside sane ceilings, so a bad HELLO_ACK cannot set huge values."""
         ceilings = {"max_header_bytes": 1048576, "max_chunk_bytes": 1048576,
                     "max_file_bytes": (1 << 63) - 1, "max_chat_bytes": 1048576,
                     "max_user_list_bytes": 1048576, "max_datagram_bytes": 65507,
@@ -66,13 +76,15 @@ class ProtocolLimits:
         return cls(**values)
 
 
-MAX_INT = (1 << 63) - 1
-ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
-TRANSFER_RE = re.compile(r"[0-9a-f]{32}\Z")
-HASH_RE = re.compile(r"[0-9a-f]{64}\Z")
+MAX_INT = (1 << 63) - 1  # largest signed 64-bit integer
+# \Z anchors at the very end of the string (unlike $, which also accepts a trailing newline).
+ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")      # request_id, message_id
+TRANSFER_RE = re.compile(r"[0-9a-f]{32}\Z")      # uuid4().hex
+HASH_RE = re.compile(r"[0-9a-f]{64}\Z")          # SHA-256 hex digest
 
 
 def _integer(value: Any, name: str, minimum: int = 0, maximum: int = MAX_INT) -> None:
+    """Raise INVALID_FIELD unless `value` is a real int (not bool) within [minimum, maximum]."""
     if type(value) is not int or not minimum <= value <= maximum:
         raise ProtocolError(ErrorCode.INVALID_FIELD, f"{name} must be an integer in {minimum}..{maximum}")
 
@@ -103,8 +115,9 @@ SCHEMAS = {
     MessageType.DISCOVER: ("", ""),
     MessageType.SERVER_INFO: ("ref_request_id server_name port tls", "host"),
 }
-CLIENT_ONLY = {MessageType.HELLO, MessageType.AUTH}
+CLIENT_ONLY = {MessageType.HELLO, MessageType.AUTH}  # never sent by the server
 SERVER_ONLY = {MessageType.HELLO_ACK, MessageType.AUTH_OK, MessageType.ERROR, MessageType.CHAT_ACK}
+# Stamped by the server; a client that sends them is trying to spoof another user.
 SERVER_FIELDS = {"sender", "message_id", "timestamp_ms"}
 COMMON_FIELDS = {"version", "type", "request_id", "payload_length"}
 
@@ -123,6 +136,7 @@ def _plain(value: Any, depth: int = 0) -> Any:
 
 
 def _string(value: Any, name: str, maximum: int = 256) -> None:
+    """Raise INVALID_FIELD unless `value` is 1..maximum characters of valid text without control characters."""
     if not isinstance(value, str) or not 1 <= len(value) <= maximum:
         raise ProtocolError(ErrorCode.INVALID_FIELD, f"{name} must be a nonempty string of at most {maximum} characters")
     try:
@@ -134,12 +148,14 @@ def _string(value: Any, name: str, maximum: int = 256) -> None:
 
 
 def _username(value: Any, name: str) -> None:
+    """A username is a short string (max 32) without spaces."""
     _string(value, name, 32)
     if any(char.isspace() for char in value):
         raise ProtocolError(ErrorCode.INVALID_FIELD, f"{name} contains whitespace")
 
 
 def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """json.loads hook: build a dict but reject duplicate keys instead of keeping the last one."""
     result = {}
     for key, value in pairs:
         if key in result:
@@ -149,10 +165,12 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _constant(value: str) -> None:
+    """json.loads hook: reject NaN and Infinity, which are not valid JSON."""
     raise ProtocolError(ErrorCode.BAD_JSON, "Non-finite JSON number")
 
 
 def _unicode_tree(value: Any) -> None:
+    """Raise UnicodeError if any string in the parsed JSON is not encodable (e.g. a lone surrogate)."""
     if isinstance(value, str):
         value.encode("utf-8", errors="strict")
     elif isinstance(value, dict):
@@ -165,6 +183,7 @@ def _unicode_tree(value: Any) -> None:
 
 
 def _json(data: bytes) -> Any:
+    """Parse strict JSON bytes; every failure becomes a BAD_JSON ProtocolError."""
     try:
         value = json.loads(data.decode("utf-8", errors="strict"),
                            object_pairs_hook=_pairs, parse_constant=_constant)
@@ -175,6 +194,7 @@ def _json(data: bytes) -> Any:
 
 
 def _effective_direction(kind: MessageType, h: dict[str, Any], direction: Direction) -> Direction:
+    """Return `direction`, or for ANY guess it from the message type and fields."""
     if direction == Direction.ANY:
         if kind == MessageType.DISCOVER:
             return Direction.UDP_REQUEST
@@ -187,6 +207,11 @@ def _effective_direction(kind: MessageType, h: dict[str, Any], direction: Direct
 
 
 def _validate_header(h: dict[str, Any], limits: ProtocolLimits, direction: Direction) -> MessageType:
+    """Check a header against the schema of its type and direction. Returns its MessageType.
+
+    Order: common fields, type, direction rules, required/unknown fields, then
+    the value of each field. The first problem found raises ProtocolError.
+    """
     if not isinstance(h, dict):
         raise ProtocolError(ErrorCode.BAD_JSON, "Header must be an object")
     if direction == Direction.CLIENT_TO_SERVER and SERVER_FIELDS.intersection(h):
@@ -202,6 +227,7 @@ def _validate_header(h: dict[str, Any], limits: ProtocolLimits, direction: Direc
         kind = MessageType(h["type"])
     except ValueError:
         raise ProtocolError(ErrorCode.UNKNOWN_TYPE) from None
+    # Direction rules: DISCOVER/SERVER_INFO only on UDP, and each side sends only its own types.
     d = _effective_direction(kind, h, direction)
     udp = {Direction.UDP_REQUEST: MessageType.DISCOVER, Direction.UDP_REPLY: MessageType.SERVER_INFO}
     if d in udp:
@@ -209,6 +235,7 @@ def _validate_header(h: dict[str, Any], limits: ProtocolLimits, direction: Direc
             raise ProtocolError(ErrorCode.INVALID_FIELD, "Message not allowed in UDP direction")
     elif kind in udp.values() or (d == Direction.CLIENT_TO_SERVER and kind in SERVER_ONLY) or (d == Direction.SERVER_TO_CLIENT and kind in CLIENT_ONLY):
         raise ProtocolError(ErrorCode.INVALID_FIELD, "Message not allowed in this direction")
+    # Exact field set: every required field present and no unknown field.
     required_text, optional_text = SCHEMAS[kind]
     required = COMMON_FIELDS | set(required_text.split())
     optional = set(optional_text.split())
@@ -223,6 +250,7 @@ def _validate_header(h: dict[str, Any], limits: ProtocolLimits, direction: Direc
         raise ProtocolError(ErrorCode.MISSING_FIELD)
     if h.keys() - required - optional:
         raise ProtocolError(ErrorCode.INVALID_FIELD, "Unknown header field")
+    # Value of each field that is present.
     for name in ("request_id", "ref_request_id", "message_id"):
         if name in h and (not isinstance(h[name], str) or not ID_RE.fullmatch(h[name])):
             raise ProtocolError(ErrorCode.INVALID_FIELD, f"Invalid {name}")
@@ -267,6 +295,7 @@ def _validate_header(h: dict[str, Any], limits: ProtocolLimits, direction: Direc
         name = h["filename"]
         try:
             _string(name, "filename", 255)
+            # A filename must not be able to leave the downloads folder.
             safe = len(name.encode("utf-8")) <= 255 and name not in {".", ".."} and not any(c in name for c in "/\\")
         except ProtocolError:
             safe = False
@@ -285,6 +314,7 @@ def _validate_header(h: dict[str, Any], limits: ProtocolLimits, direction: Direc
             raise ProtocolError(ErrorCode.INVALID_FIELD, "Invalid cancellation reason") from None
     if kind == MessageType.CHAT_ACK and h["status"] != "accepted":
         raise ProtocolError(ErrorCode.INVALID_FIELD, "Unknown acknowledgement status")
+    # ok=False must carry an error_code, and ok=True must not.
     if kind == MessageType.FILE_RESULT and ((not h["ok"]) != ("error_code" in h)):
         raise ProtocolError(ErrorCode.INVALID_FIELD, "error_code is required iff ok is false")
     if "limits" in h:
@@ -306,7 +336,7 @@ def encode_message(msg: Message, limits: ProtocolLimits = DEFAULT_LIMITS) -> byt
     except (ValueError, TypeError, UnicodeError, RecursionError):
         raise ProtocolError(ErrorCode.BAD_JSON) from None
     check_frame_prefix(len(data), limits)
-    frame = struct.pack("!I", len(data)) + data + msg.payload
+    frame = struct.pack("!I", len(data)) + data + msg.payload  # "!I" = network-order unsigned 32-bit
     if msg.type in {MessageType.DISCOVER, MessageType.SERVER_INFO} and len(frame) > limits.max_datagram_bytes:
         raise ProtocolError(ErrorCode.PAYLOAD_TOO_LARGE, "Datagram exceeds application limit")
     return frame
@@ -357,6 +387,7 @@ def max_payload_for(msg_type: MessageType, limits: ProtocolLimits = DEFAULT_LIMI
 
 
 def _validate_users(payload: bytes) -> None:
+    """Check the USER_LIST payload: {"users": [{username, online, ip, port}, ...]}."""
     try:
         obj = _json(payload)
         if not isinstance(obj, dict) or set(obj) != {"users"} or not isinstance(obj["users"], list):
@@ -381,6 +412,7 @@ def _validate_users(payload: bytes) -> None:
 class FrameDecoder:
     """Incremental socket-free decoder, permanently poisoned on corruption."""
     def __init__(self, limits: ProtocolLimits = DEFAULT_LIMITS, direction: Direction = Direction.ANY) -> None:
+        """Start with an empty buffer, waiting for the 4-byte length prefix."""
         self.limits = limits
         self.direction = direction
         self._buffer = bytearray()
@@ -393,10 +425,12 @@ class FrameDecoder:
         if self._error is not None:
             raise self._error
         messages = []
-        view = memoryview(data)
+        view = memoryview(data)  # slices of a memoryview do not copy the bytes
         offset = 0
         try:
             while True:
+                # Three stages per frame: 4-byte prefix -> header -> payload.
+                # `needed` is the size of the stage we are in.
                 needed = (4 if self._header_len is None else self._header_len
                           if self._header is None else self._header["payload_length"])
                 take = min(needed - len(self._buffer), len(view) - offset)
@@ -414,9 +448,11 @@ class FrameDecoder:
                     self._header_len = None
                     self._header = None
                 self._buffer.clear()
+                # Input used up; keep looping only to finish a frame with an empty payload.
                 if offset == len(view) and (self._header is None or self._header["payload_length"]):
                     break
         except ProtocolError as error:
+            # A byte stream cannot resync after a bad frame: fail every later call too.
             self._error = error
             self._buffer.clear()
             raise
@@ -452,125 +488,3 @@ def decode_datagram(data: bytes, limits: ProtocolLimits = DEFAULT_LIMITS,
     if len(data) != 4 + n + h["payload_length"]:
         raise ProtocolError(ErrorCode.BAD_FRAME, "Datagram must contain exactly one frame")
     return validate_message(h, data[4+n:], limits, direction)
-
-
-def build_message(kind: MessageType, payload: bytes = b"", *, limits: ProtocolLimits = DEFAULT_LIMITS, **fields: Any) -> Message:
-    """General builder for all catalogue types, including server-stamped messages."""
-    h = {"version": PROTOCOL_VERSION, "type": kind.value, "request_id": uuid4().hex,
-         "payload_length": len(payload), **fields}
-    return validate_message(h, payload, limits)
-
-
-def _text_bytes(text: str) -> bytes:
-    try:
-        return text.encode("utf-8", errors="strict")
-    except (AttributeError, UnicodeError):
-        raise ProtocolError(ErrorCode.BAD_PAYLOAD, "Invalid UTF-8 text") from None
-
-
-def build_hello(client_name: str = "LanLink", client_version: str = "1.0") -> Message:
-    return build_message(MessageType.HELLO, client_name=client_name, client_version=client_version)
-
-
-def build_hello_ack(ref_request_id: str, server_name: str, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
-    return validate_message({"version": 1, "type": "HELLO_ACK", "request_id": uuid4().hex,
-                             "payload_length": 0, "ref_request_id": ref_request_id,
-                             "server_name": server_name, "limits": limits.to_dict()}, b"", limits)
-
-
-def build_auth(username: str, password: str) -> Message:
-    return build_message(MessageType.AUTH, _text_bytes(password), username=username)
-
-
-def build_auth_ok(ref_request_id: str, username: str) -> Message:
-    return build_message(MessageType.AUTH_OK, ref_request_id=ref_request_id, username=username)
-
-
-def build_chat_public(text: str, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
-    return build_message(MessageType.CHAT_PUBLIC, _text_bytes(text), limits=limits)
-
-
-def build_chat_private(recipient: str, text: str, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
-    return build_message(MessageType.CHAT_PRIVATE, _text_bytes(text), recipient=recipient, limits=limits)
-
-
-def build_file_offer(transfer_id: str, recipient: str, filename: str, size: int,
-                     sha256: str, chunk_size: int, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
-    return build_message(MessageType.FILE_OFFER, transfer_id=transfer_id, recipient=recipient,
-                         filename=filename, size=size, sha256=sha256, chunk_size=chunk_size, limits=limits)
-
-
-def build_file_accept(transfer_id: str) -> Message:
-    return build_message(MessageType.FILE_ACCEPT, transfer_id=transfer_id)
-
-
-def build_file_reject(transfer_id: str, reason: str | None = None) -> Message:
-    return build_message(MessageType.FILE_REJECT, transfer_id=transfer_id, **({"reason": reason} if reason else {}))
-
-
-def build_file_chunk(transfer_id: str, seq: int, data: bytes, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
-    return build_message(MessageType.FILE_CHUNK, data, transfer_id=transfer_id, seq=seq, limits=limits)
-
-
-def build_file_end(transfer_id: str, total_chunks: int, total_bytes: int, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
-    return build_message(MessageType.FILE_END, transfer_id=transfer_id, total_chunks=total_chunks,
-                         total_bytes=total_bytes, limits=limits)
-
-
-def build_file_result(transfer_id: str, ok: bool, received_bytes: int, sha256: str | None = None,
-                      error_code: ErrorCode | None = None, *, limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
-    extra = {}
-    if sha256 is not None:
-        extra["sha256"] = sha256
-    if error_code is not None:
-        extra["error_code"] = error_code.value
-    return build_message(MessageType.FILE_RESULT, transfer_id=transfer_id, ok=ok,
-                         received_bytes=received_bytes, limits=limits, **extra)
-
-
-def build_file_cancel(transfer_id: str, reason: ErrorCode | None = None) -> Message:
-    return build_message(MessageType.FILE_CANCEL, transfer_id=transfer_id,
-                         **({"reason": reason.value} if reason else {}))
-
-
-def build_ping() -> Message:
-    return build_message(MessageType.PING)
-
-
-def build_pong(ref_request_id: str) -> Message:
-    return build_message(MessageType.PONG, ref_request_id=ref_request_id)
-
-
-def build_error(code: ErrorCode, message: str, *, ref_request_id: str | None = None,
-                field: str | None = None, transfer_id: str | None = None) -> Message:
-    extra = {k: v for k, v in {"ref_request_id": ref_request_id, "field": field,
-                             "transfer_id": transfer_id}.items() if v is not None}
-    return build_message(MessageType.ERROR, code=code.value, message=message, **extra)
-
-
-def build_discover() -> Message:
-    return build_message(MessageType.DISCOVER)
-
-
-def build_server_info(ref_request_id: str, server_name: str, port: int, tls: bool = True,
-                      host: str | None = None) -> Message:
-    return build_message(MessageType.SERVER_INFO, ref_request_id=ref_request_id, server_name=server_name,
-                         port=port, tls=tls, **({"host": host} if host is not None else {}))
-
-
-def build_logout(reason: str | None = None) -> Message:
-    return build_message(MessageType.LOGOUT, **({"reason": reason} if reason else {}))
-
-
-def build_user_list(users: list[dict[str, Any]] | None = None, *, ref_request_id: str | None = None,
-                    limits: ProtocolLimits = DEFAULT_LIMITS) -> Message:
-    """Build an empty request, or a users response referencing its request ID."""
-    payload = b"" if users is None else json.dumps({"users": users}, ensure_ascii=False,
-                                                   separators=(",", ":"), sort_keys=True).encode("utf-8")
-    return build_message(MessageType.USER_LIST, payload, limits=limits,
-                         **({"ref_request_id": ref_request_id} if ref_request_id is not None else {}))
-
-
-def build_chat_ack(ref_request_id: str, message_id: str, timestamp_ms: int) -> Message:
-    return build_message(MessageType.CHAT_ACK, ref_request_id=ref_request_id,
-                         message_id=message_id, timestamp_ms=timestamp_ms, status="accepted")

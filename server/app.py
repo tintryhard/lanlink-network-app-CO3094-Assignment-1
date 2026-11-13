@@ -2,7 +2,7 @@
 
 A UDP socket on the same port number answers DISCOVER so clients can find the server.
 """
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, replace
 import ipaddress
 import math
 import socket
@@ -15,11 +15,13 @@ from common.errors import ErrorCode, ProtocolError, user_message
 from common.handshake import accept_hello
 from common.models import (ConnectionState, Message, MessageType, TransferStatus, UserInfo,
                            check_transition, is_terminal)
-from common.protocol import (DEFAULT_LIMITS, Direction, build_auth_ok, build_chat_ack, build_error,
-                             build_message, build_server_info, build_user_list, decode_datagram,
-                             encode_message)
+from common.protocol import Direction
+from common.builders import (build_auth_ok, build_chat_ack, build_error, build_message,
+                             build_user_list)
 from common.transport import SocketTransport
 from server.auth import CredentialStore
+from server.discovery import answer_discovery
+from server.sessions import Connection, TransferSession, UserSession
 
 
 # Messages relayed unchanged between the two parties of an accepted transfer.
@@ -30,41 +32,22 @@ FILE_CONTENT_TYPES = {MessageType.FILE_CHUNK, MessageType.FILE_END,
 AUTH_READY_WAIT_S = 1.0
 
 
-@dataclass
-class Connection:
-    connection_id: str
-    socket: socket.socket
-    worker: threading.Thread
-    state: ConnectionState = ConnectionState.CONNECTING
-    transport: SocketTransport | None = None
-    auth_ready: threading.Event = field(default_factory=threading.Event, repr=False)
-    transfer_ids: set[str] = field(default_factory=set, repr=False)
-
-
-@dataclass(frozen=True)
-class UserSession:
-    username: str
-    connection_id: str
-    ip: str
-    port: int
-    online: bool = True
-
-
-@dataclass
-class TransferSession:
-    offer: Message
-    sender_id: str
-    recipient_id: str
-    deadline: float
-    status: TransferStatus = TransferStatus.OFFERED
-    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-
-
 class TCPServer:
+    """Thread-per-client server. One lock (_lock) guards the three registries:
+
+    _connections (connection_id -> Connection), _users (username -> UserSession)
+    and _transfers (transfer_id -> TransferSession). Socket I/O never runs while
+    _lock is held, so one slow client cannot block the others.
+    """
     def __init__(self, host: str = '127.0.0.1', port: int = 5000, *, max_clients: int = 64,
                  handshake_timeout: float = 5.0, idle_timeout: float = 45.0,
                  credentials: CredentialStore | None = None,
                  transfer_timeout: float = 60.0, tls: ssl.SSLContext | None = None) -> None:
+        """Check the options, bind the TCP listener and the UDP discovery socket.
+
+        Plaintext (tls=None) is only allowed on a loopback address. Threads are
+        started later by serve_forever().
+        """
         if type(max_clients) is not int or max_clients < 1:
             raise ValueError('max_clients must be a positive integer')
         if any(not math.isfinite(value) or value <= 0
@@ -102,8 +85,11 @@ class TCPServer:
         except BaseException:
             self._listener.close()
             raise
-        self._discovery_thread = threading.Thread(target=self._answer_discovery,
-                                                  name='lanlink-discovery', daemon=True)
+        self._discovery_thread = threading.Thread(
+            target=answer_discovery, args=(self._discovery, self._stopping, self.address[1], tls is not None),
+            name='lanlink-discovery', daemon=True)  # daemon: never keeps the process alive
+
+    # --- Registry snapshots (copies, so callers never touch live records) ---
 
     def connections(self) -> dict[str, Connection]:
         """Return copies of records under the registry lock."""
@@ -121,7 +107,10 @@ class TCPServer:
         with self._lock:
             return {key: replace(value) for key, value in self._transfers.items()}
 
+    # --- Connection lifecycle: accept, handshake, message loop ---
+
     def serve_forever(self) -> None:
+        """Accept clients until shutdown(); each one gets its own worker thread (_serve_client)."""
         self._discovery_thread.start()
         try:
             while not self._stopping.is_set():
@@ -149,30 +138,6 @@ class TCPServer:
                         raise
         finally:
             self.shutdown()
-
-    def _answer_discovery(self) -> None:
-        """UDP thread: answer each DISCOVER with SERVER_INFO (name, TCP port, TLS on/off).
-
-        The client takes the server's IP from the datagram's source address.
-        """
-        while not self._stopping.is_set():
-            try:
-                # One byte over the limit, so decode_datagram can reject oversize data.
-                data, sender = self._discovery.recvfrom(DEFAULT_LIMITS.max_datagram_bytes + 1)
-            except socket.timeout:
-                continue
-            except OSError:
-                return  # closed by shutdown()
-            try:
-                request = decode_datagram(data)  # only a valid DISCOVER passes
-            except ProtocolError:
-                continue  # UDP has no session to report errors on: ignore junk
-            reply = build_server_info(request.header['request_id'], 'LanLink', self.address[1],
-                                      tls=self.tls is not None)
-            try:
-                self._discovery.sendto(encode_message(reply), sender)
-            except OSError:
-                pass
 
     def _serve_client(self, key: str, connection: socket.socket) -> None:
         """Worker thread for one connection: HELLO, then the message loop, then cleanup.
@@ -232,7 +197,7 @@ class TCPServer:
                     self._connections.pop(key, None)
 
     def _dispatch_client_messages(self, key: str, connection: socket.socket,
-                      transport: SocketTransport) -> None:
+                                   transport: SocketTransport) -> None:
         """Handle one client's messages in order until LOGOUT, disconnect or a fatal error.
 
         Each request either gets its normal reply or one ERROR with ref_request_id.
@@ -301,6 +266,8 @@ class TCPServer:
             transport.send(build_error(code, user_message(code),
                                        ref_request_id=message.header['request_id'],
                                        transfer_id=message.header.get('transfer_id')))
+            # Close after 3 failed logins, or after a type the loop does not handle.
+            # (*FILE_CONTENT_TYPES unpacks that set into this set literal.)
             if failures >= 3 or message.type not in {
                     MessageType.AUTH, MessageType.USER_LIST, MessageType.LOGOUT,
                     MessageType.CHAT_PRIVATE, MessageType.CHAT_PUBLIC,
@@ -357,6 +324,8 @@ class TCPServer:
                 pass
             return False
 
+    # --- File transfer: negotiation, relay and failure ---
+
     def _fail_transfer_and_notify(self, session: TransferSession, code: ErrorCode) -> None:
         """Mark the transfer FAILED, remove it and send ERROR(code) to both parties.
 
@@ -403,7 +372,7 @@ class TCPServer:
                 return ErrorCode.INVALID_FIELD
             if not target.auth_ready.wait(AUTH_READY_WAIT_S):
                 return ErrorCode.CONNECTION_LOST
-            
+
             session = TransferSession(message, key, target.connection_id,
                                       time.monotonic() + self.transfer_timeout)
             with session.lock:
@@ -418,7 +387,7 @@ class TCPServer:
                     owner = self._connections[key]
                     if len(owner.transfer_ids) >= 64:
                         return ErrorCode.QUEUE_FULL
-                    # Update both sites 
+                    # Register in both places: the live transfers and this owner's ID history.
                     owner.transfer_ids.add(transfer_id)
                     self._transfers[transfer_id] = session
                 header = dict(message.header)
@@ -451,7 +420,7 @@ class TCPServer:
             if expired:
                 self._fail_transfer_and_notify(session, ErrorCode.TIMEOUT)
                 return ErrorCode.TRANSFER_UNKNOWN
-            
+
             # Notify the sender first. Echo the decision to the recipient only
             # after forwarding succeeds; this is negotiation, never completion.
             if not self._send_to_connection(session.sender_id, message):
@@ -511,6 +480,8 @@ class TCPServer:
             if not self._send_to_connection(peer, message) and not finished:
                 self._fail_transfer_and_notify(session, ErrorCode.CONNECTION_LOST)
         return None
+
+    # --- Chat routing ---
 
     def _route_public(self, username: str, message: Message,
                       sender_transport: SocketTransport) -> None:
@@ -583,6 +554,8 @@ class TCPServer:
         sender_transport.send(build_chat_ack(message.header['request_id'], message_id, timestamp_ms))
         return None
 
+    # --- Shutdown ---
+
     def shutdown(self) -> None:
         """Stop admissions, interrupt blocked I/O and join all registered workers."""
         with self._lock:
@@ -596,6 +569,7 @@ class TCPServer:
             pass
         self._listener.close()
         self._discovery.close()
+        # ident is None until start(); join() on a never-started thread raises.
         if (self._discovery_thread.ident is not None
                 and self._discovery_thread is not threading.current_thread()):
             self._discovery_thread.join()

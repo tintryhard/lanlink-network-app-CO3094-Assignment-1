@@ -1,121 +1,21 @@
-"""CLI client: UDP server discovery, TCP (or TLS) handshake, login, chat and file transfer."""
+"""CLI client: python -m client [--discover] [--host H --port P --username U --cafile CERT]."""
 import argparse
 import getpass
-import ipaddress
-import json
 import math
 import os
 import queue
-import socket
 import sys
 import threading
-import time
-from typing import Any
 
-from common.errors import ErrorCode, LanLinkError, ProtocolError
+from common.errors import LanLinkError, ProtocolError
 from common.handshake import initiate_hello
-from common.models import Message, MessageType, TransferDirection, TransferSnapshot, TransferStatus
-from common.protocol import (DEFAULT_LIMITS, Direction, build_auth, build_discover, build_logout,
-                             build_user_list, decode_datagram, encode_message)
-from common.tls import client_context
+from common.models import Message, MessageType, TransferSnapshot
+from common.protocol import Direction
 from common.transport import SocketTransport
+from client.connection import authenticate, connect_hello, open_connection
+from client.discovery import discover_servers
+from client.display import describe_file_event, describe_transfer_end, format_progress, format_users
 from client.private_chat import PrivateChatClient
-
-
-def discover_servers(port: int, wait: float = 2.0,
-                     address: str = '255.255.255.255') -> list[dict[str, Any]]:
-    """Broadcast a UDP DISCOVER and collect SERVER_INFO replies for `wait` seconds.
-
-    Returns one dict per server: name, ip, port (TCP) and tls.
-    """
-    request = build_discover()
-    servers = []
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
-        udp.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        udp.sendto(encode_message(request), (address, port))
-        deadline = time.monotonic() + wait
-        while (remaining := deadline - time.monotonic()) > 0:
-            udp.settimeout(remaining)
-            try:
-                data, (ip, _) = udp.recvfrom(DEFAULT_LIMITS.max_datagram_bytes + 1)
-            except socket.timeout:
-                break
-            try:
-                reply = decode_datagram(data, direction=Direction.UDP_REPLY)
-            except ProtocolError:
-                continue  # not a valid SERVER_INFO: ignore
-            if reply.header['ref_request_id'] == request.header['request_id']:
-                servers.append({'name': reply.header['server_name'], 'ip': ip,
-                                'port': reply.header['port'], 'tls': reply.header['tls']})
-    return servers
-
-
-def _connect(host: str, port: int, timeout: float, cafile: str | None = None) -> socket.socket:
-    """Open a TCP connection; with cafile, wrap it in TLS that trusts only that certificate."""
-    address = socket.gethostbyname(host)
-    if cafile is None and not ipaddress.ip_address(address).is_loopback:
-        raise ValueError('Plaintext is restricted to localhost; pass --cafile to use TLS')
-    connection = socket.create_connection((address, port), timeout=timeout)
-    if cafile is None:
-        return connection
-    try:
-        return client_context(cafile).wrap_socket(connection, server_hostname=host)
-    except BaseException:
-        connection.close()
-        raise
-
-
-def connect_hello(host: str, port: int, *, timeout: float = 5.0, cafile: str | None = None) -> Message:
-    with _connect(host, port, timeout, cafile) as connection:
-        return initiate_hello(SocketTransport(connection, direction=Direction.SERVER_TO_CLIENT))
-
-
-def authenticate(transport: SocketTransport, username: str, password: str) -> Message:
-    request = build_auth(username, password)
-    transport.send(request)
-    reply = transport.receive()
-    if reply is None:
-        raise EOFError('Server disconnected before AUTH response')
-    if reply.header.get('ref_request_id') != request.header['request_id']:
-        raise ProtocolError(ErrorCode.INVALID_FIELD, 'Authentication response does not match request')
-    if reply.type == MessageType.ERROR:
-        raise LanLinkError(reply.header['code'])
-    if reply.type != MessageType.AUTH_OK or reply.header['username'] != username:
-        raise ProtocolError(ErrorCode.INVALID_FIELD, 'Expected AUTH_OK for requested username')
-    return reply
-
-
-def request_users(transport: SocketTransport) -> list[dict[str, Any]]:
-    request = build_user_list()
-    transport.send(request)
-    reply = transport.receive()
-    if reply is None:
-        raise EOFError('Server disconnected before USER_LIST')
-    if reply.header.get('ref_request_id') != request.header['request_id']:
-        raise ProtocolError(ErrorCode.INVALID_FIELD, 'USER_LIST response does not match request')
-    if reply.type == MessageType.ERROR:
-        raise LanLinkError(reply.header['code'])
-    if reply.type != MessageType.USER_LIST:
-        raise ProtocolError(ErrorCode.INVALID_FIELD, 'Expected USER_LIST')
-    return json.loads(reply.payload)['users']
-
-
-def format_users(users: list[dict[str, Any]], me: str) -> str:
-    """Render the USER_LIST payload as one line per online user."""
-    lines = [f'Online users ({len(users)}):']
-    for user in users:
-        you = ' (you)' if user['username'] == me else ''
-        lines.append(f'  {user["username"]:<20} {user["ip"]}:{user["port"]}{you}')
-    return '\n'.join(lines)
-
-
-def format_progress(snapshot: TransferSnapshot, width: int = 20) -> str:
-    """Render a text progress bar such as `[#####...............]  25% a.txt 256/1024 B`."""
-    done = int(snapshot.fraction * width)
-    arrow = 'to' if snapshot.direction == TransferDirection.SEND else 'from'
-    return (f'[{"#" * done}{"." * (width - done)}] {snapshot.fraction:4.0%} '
-            f'{snapshot.filename} {arrow} {snapshot.peer} '
-            f'{snapshot.processed_bytes}/{snapshot.total_bytes} B')
 
 
 def _read_command(prompt: str) -> str:
@@ -135,7 +35,14 @@ def _read_command(prompt: str) -> str:
 
 
 def login_cli(host: str, port: int, username: str, timeout: float, cafile: str | None = None) -> None:
-    with _connect(host, port, timeout, cafile) as connection:
+    """Interactive session: connect, log in, then run the command loop until logout or disconnect.
+
+    Three threads cooperate. The reader thread (inside PrivateChatClient) prints
+    chats and puts file events on `commands`. The input thread reads stdin and puts
+    typed lines on `commands`. This main thread takes items from `commands` one at a
+    time and handles them, so commands and file events never run in parallel.
+    """
+    with open_connection(host, port, timeout, cafile) as connection:
         transport = SocketTransport(connection, direction=Direction.SERVER_TO_CLIENT)
         initiate_hello(transport)
         print(f'Connected to {host}:{port} ({"TLS" if cafile else "plaintext, localhost only"})')
@@ -143,25 +50,35 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
         print(f'Authenticated as {username}')
 
         def display(message: Message) -> None:
+            """Reader thread: print an incoming chat as [sender -> recipient] text."""
             recipient = 'all' if message.type == MessageType.CHAT_PUBLIC else username
             print(f'\n[{message.header["sender"]} -> {recipient}] '
                   f'{message.payload.decode("utf-8")}', flush=True)
 
+        # Everything the main loop handles: typed lines (str), file events (Message or
+        # final TransferSnapshot), an input error, or None when disconnected.
         commands: queue.Queue[str | Message | BaseException | None] = queue.Queue()
         disconnected = threading.Event()
         read_next = threading.Event()
 
         def notify_disconnect() -> None:
+            """Reader thread: wake the main loop and the input thread when the connection ends."""
             disconnected.set()
             commands.put_nowait(None)
             read_next.set()
             print('\nDisconnected.', flush=True)
 
         def show_progress(snapshot: TransferSnapshot) -> None:
+            """Engine callback: redraw the progress bar of a running transfer."""
             # \r rewrites the same line, so the bar grows in place.
             print(f'\r{format_progress(snapshot)}', end='', flush=True)
 
         def read_commands() -> None:
+            """Input thread: read one line each time read_next is set and queue it.
+
+            The main loop sets read_next only after it finished the previous command, so
+            the '> ' prompt appears once per command. End of input (Ctrl+D) means /logout.
+            """
             while True:
                 read_next.wait()
                 read_next.clear()
@@ -189,8 +106,8 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
             # Only this daemon reads stdin. Raw reads avoid a buffered-stdin lock
             # preventing interpreter exit while it waits for an unfinished line.
             threading.Thread(target=read_commands, name='lanlink-cli-input', daemon=True).start()
-            read_next.set()
-            
+            read_next.set()  # let the input thread show the first prompt
+
             while not disconnected.is_set():
                 command = commands.get()
                 if command is None or disconnected.is_set():
@@ -198,25 +115,10 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
                 if isinstance(command, BaseException):
                     raise command
                 if isinstance(command, TransferSnapshot):  # A transfer has ended.
-                    if command.saved_path:
-                        result = f'completed, saved to {command.saved_path}'
-                    elif command.status == TransferStatus.COMPLETED:
-                        result = f'completed, {command.peer} verified the file'
-                    else:
-                        result = f'{command.status.value}: {command.error.message if command.error else ""}'
-                    print(f'\n{format_progress(command)}\nFile {command.transfer_id} '
-                          f'({command.filename}) {result}', flush=True)
+                    print(f'\n{format_progress(command)}\n{describe_transfer_end(command)}', flush=True)
                     continue
-                if isinstance(command, Message):
-                    transfer_id = command.header['transfer_id']
-                    if command.type == MessageType.FILE_OFFER:
-                        print(f'\nFile offer {transfer_id} from {command.header["sender"]}: '
-                              f'{command.header["filename"]} ({command.header["size"]} bytes). '
-                              f'Use /accept {transfer_id} or /reject {transfer_id}.', flush=True)
-                    elif command.type == MessageType.ERROR:
-                        print(f'\nFile {transfer_id}: {LanLinkError(command.header["code"])}', flush=True)
-                    else:
-                        print(f'\nFile {transfer_id}: {command.type.value}', flush=True)
+                if isinstance(command, Message):  # A file event from the peer.
+                    print(f'\n{describe_file_event(command)}', flush=True)
                     continue
                 command = command.strip()
                 try:
@@ -226,6 +128,7 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
                     if command in {'', 'users', '/users'}:
                         print(format_users(client.users(), username))
                     elif command.startswith('/msg '):
+                        # partition splits at the first space: ('bob', ' ', 'hello there').
                         recipient, separator, text = command[5:].partition(' ')
                         if not separator or not text:
                             print('Usage: /msg USER TEXT')
@@ -280,6 +183,7 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Entry point: --discover lists servers, --username logs in, otherwise only test the handshake."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=5000)
