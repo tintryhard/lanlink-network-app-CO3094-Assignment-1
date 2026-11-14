@@ -125,9 +125,13 @@ def test_receiver_disconnect_mid_transfer_stops_sender(accounts, tmp_path, monke
 def test_quiet_receiver_is_not_dropped_by_idle_timeout(accounts, tmp_path, monkeypatch):
     source = tmp_path / 'slow.bin'
     source.write_bytes(os.urandom(10 * DEFAULT_LIMITS.max_chunk_bytes))
-    with running(credentials=accounts[0], idle_timeout=0.5) as server, ExitStack() as stack:
+    with running(credentials=accounts[0]) as server, ExitStack() as stack:
         alice, _ = async_login(stack, server, accounts, 'alice')
         bob, _ = async_login(stack, server, accounts, 'bob')
+        # Lower the timeout only after both logins: one PBKDF2 login takes about
+        # 0.5s, so alice could otherwise be dropped while bob is still logging in.
+        # It applies from each worker's next request (FILE_OFFER, FILE_ACCEPT).
+        server.idle_timeout = 0.5
         slow_chunks(alice, monkeypatch, 0.1)  # about 1s in total, longer than idle_timeout
         transfer_id = alice.offer_file('bob', source)
         event(bob, MessageType.FILE_OFFER, transfer_id)

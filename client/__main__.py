@@ -18,6 +18,17 @@ from client.display import describe_file_event, describe_transfer_end, format_pr
 from client.private_chat import PrivateChatClient
 
 
+def _use_utf8_output() -> None:
+    """Print UTF-8 even when stdout/stderr is a pipe using a legacy code page.
+
+    On Windows a redirected stream defaults to e.g. cp1252, and printing a
+    Vietnamese error message or an emoji would raise UnicodeEncodeError.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, 'reconfigure', None)  # absent on some test doubles
+        if reconfigure is not None:
+            reconfigure(encoding='utf-8', errors='replace')
+
 def _read_command(prompt: str) -> str:
     """Read a line without holding stdin's buffered lock during interpreter exit."""
     print(prompt, end='', flush=True)
@@ -139,7 +150,9 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
                         print('Usage: /all TEXT')
                     elif command.startswith('/all '):
                         ack = client.send_public(command[5:])
-                        print(f'Accepted: {ack.header["message_id"]}')
+                        # The server skips recipients it cannot write to, so the ACK
+                        # does not mean everyone received it.
+                        print(f'Accepted (best-effort broadcast): {ack.header["message_id"]}')
                     elif command == '/offer' or command.startswith('/offer '):
                         recipient, separator, path = command[7:].partition(' ')
                         if not recipient or not separator or not path:
@@ -184,6 +197,7 @@ def login_cli(host: str, port: int, username: str, timeout: float, cafile: str |
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point: --discover lists servers, --username logs in, otherwise only test the handshake."""
+    _use_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=5000)

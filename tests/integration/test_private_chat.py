@@ -601,7 +601,8 @@ def test_cli_termination_and_cleanup(accounts, mode):
         with subprocess.Popen([sys.executable, '-u', '-c', code],
                               cwd=Path(__file__).resolve().parents[2], env=environment,
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, text=True) as process:
+                              stderr=subprocess.PIPE, text=True,
+                              encoding='utf-8') as process:  # the CLI always writes UTF-8
             output = []
 
             def capture():

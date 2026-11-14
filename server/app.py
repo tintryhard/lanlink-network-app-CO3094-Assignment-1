@@ -3,10 +3,12 @@
 A UDP socket on the same port number answers DISCOVER so clients can find the server.
 """
 from dataclasses import asdict, replace
+import errno
 import ipaddress
 import math
 import socket
 import ssl
+import sys
 import threading
 import time
 from uuid import uuid4
@@ -30,6 +32,9 @@ FILE_CONTENT_TYPES = {MessageType.FILE_CHUNK, MessageType.FILE_END,
 # How long a route waits for the recipient's AUTH_OK to be sent. Kept well below
 # the client's 5s request timeout so the sender always gets its ACK or ERROR.
 AUTH_READY_WAIT_S = 1.0
+# Longest a worker blocks in recv() before checking whether it was told to stop.
+# Needed on Windows, where shutdown() from another thread does not wake recv().
+WORKER_WAKEUP_S = 0.5
 
 
 class TCPServer:
@@ -74,20 +79,37 @@ class TCPServer:
             self._listener.listen(max_clients)
             self._listener.settimeout(0.1)
             self.address = self._listener.getsockname()
-            # UDP discovery uses the TCP port number; 0.0.0.0 also receives broadcasts.
-            self._discovery = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                self._discovery.bind((address, self.address[1]))
-                self._discovery.settimeout(0.1)  # wake up to notice shutdown
-            except BaseException:
-                self._discovery.close()
-                raise
         except BaseException:
             self._listener.close()
             raise
-        self._discovery_thread = threading.Thread(
-            target=answer_discovery, args=(self._discovery, self._stopping, self.address[1], tls is not None),
-            name='lanlink-discovery', daemon=True)  # daemon: never keeps the process alive
+        # Discovery is optional: None means the server runs without it.
+        self._discovery = self._open_discovery(address, self.address[1])
+        self._discovery_thread: threading.Thread | None = None
+        if self._discovery is not None:
+            self._discovery_thread = threading.Thread(
+                target=answer_discovery, args=(self._discovery, self._stopping, self.address[1], tls is not None),
+                name='lanlink-discovery', daemon=True)  # daemon: never keeps the process alive
+
+    @staticmethod
+    def _open_discovery(address: str, port: int) -> socket.socket | None:
+        """Bind the UDP discovery socket on the TCP port number, or return None.
+
+        0.0.0.0 also receives broadcasts. Windows may reserve a UDP port range that
+        covers a free TCP port (WinError 10013), so a failed bind must not stop the
+        TCP server from starting.
+        """
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            udp.bind((address, port))
+            udp.settimeout(0.1)  # wake up to notice shutdown
+            return udp
+        except OSError as error:
+            udp.close()
+            if not isinstance(error, PermissionError) and error.errno not in (errno.EADDRINUSE, 10048):
+                raise
+            print(f'Discovery disabled: cannot bind UDP port {port} ({error}).',
+                  file=sys.stderr, flush=True)
+            return None
 
     # --- Registry snapshots (copies, so callers never touch live records) ---
 
@@ -111,7 +133,8 @@ class TCPServer:
 
     def serve_forever(self) -> None:
         """Accept clients until shutdown(); each one gets its own worker thread (_serve_client)."""
-        self._discovery_thread.start()
+        if self._discovery_thread is not None:
+            self._discovery_thread.start()
         try:
             while not self._stopping.is_set():
                 try:
@@ -287,10 +310,17 @@ class TCPServer:
             with self._lock:
                 deadlines = [s.deadline for s in self._transfers.values()
                              if key in (s.sender_id, s.recipient_id)]
-            transport.read_deadline = min([idle_deadline] + deadlines)
+            transport.read_deadline = min([idle_deadline, time.monotonic() + WORKER_WAKEUP_S] + deadlines)
             try:
                 return transport.receive()
             except socket.timeout:
+                with self._lock:
+                    record = self._connections.get(key)
+                    closing = (self._stopping.is_set() or record is None
+                               or record.state == ConnectionState.CLOSING)
+                if closing:
+                    # Another thread aborted this connection (see _abort_connection).
+                    return None
                 self._fail_transfers_of(key, ErrorCode.TIMEOUT, expired_only=True)
                 if time.monotonic() >= idle_deadline:
                     with self._lock:
@@ -318,11 +348,22 @@ class TCPServer:
             target.transport.send(message)
             return True
         except OSError:
-            try:
-                target.socket.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+            self._abort_connection(target)
             return False
+
+    def _abort_connection(self, target: Connection) -> None:
+        """Drop a peer whose stream a failed write may have left with a partial frame.
+
+        Marking it CLOSING stops further sends to it and tells its worker to exit
+        at its next wakeup; shutdown() also wakes that worker at once on Linux.
+        """
+        with self._lock:
+            if target.state != ConnectionState.CLOSED:
+                target.state = ConnectionState.CLOSING
+        try:
+            target.socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     # --- File transfer: negotiation, relay and failure ---
 
@@ -508,10 +549,7 @@ class TCPServer:
                 target.transport.send(forwarded)
             except OSError:
                 # A failed/partial write invalidates only this recipient stream.
-                try:
-                    target.socket.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
+                self._abort_connection(target)
         # Best-effort acceptance even with zero recipients or partial/all write
         # failures. The existing ACK schema carries no delivery count/receipt.
         sender_transport.send(build_chat_ack(message.header['request_id'], message_id, timestamp_ms))
@@ -545,10 +583,7 @@ class TCPServer:
             target.transport.send(forwarded)
         except OSError:
             # A partially written frame makes the recipient stream unusable.
-            try:
-                target.socket.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+            self._abort_connection(target)
             return ErrorCode.CONNECTION_LOST
         # Acceptance is not a recipient read receipt (nor durable delivery).
         sender_transport.send(build_chat_ack(message.header['request_id'], message_id, timestamp_ms))
@@ -568,9 +603,11 @@ class TCPServer:
         except OSError:
             pass
         self._listener.close()
-        self._discovery.close()
+        if self._discovery is not None:
+            self._discovery.close()
         # ident is None until start(); join() on a never-started thread raises.
-        if (self._discovery_thread.ident is not None
+        if (self._discovery_thread is not None
+                and self._discovery_thread.ident is not None
                 and self._discovery_thread is not threading.current_thread()):
             self._discovery_thread.join()
         for record in records:

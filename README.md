@@ -133,9 +133,8 @@ If the network blocks broadcast, `--discover` finds nothing. Use the server's IP
 python -m pytest -q tests
 ```
 
-The tests start real servers on localhost. There is one known failure:
-`test_cli_sends_and_receives_public_while_preserving_private_chat` expects a
-message ("best-effort broadcast") that the CLI does not print.
+The tests start real servers on localhost. The TLS tests need `openssl` on PATH
+(Git for Windows ships one) and are skipped without it.
 
 ## Team
 
