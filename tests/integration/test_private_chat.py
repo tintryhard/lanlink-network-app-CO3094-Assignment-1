@@ -735,6 +735,9 @@ def test_chat_ack_arrives_before_client_timeout(accounts):
         alice, _ = async_login(stack, server, accounts, 'alice')
         login(stack, server, accounts, 'bob')
         record = server._connections[server.users()['bob'].connection_id]
+        # The server sets auth_ready just after sending AUTH_OK; wait for that
+        # first, or it could set the flag again after this test clears it.
+        assert record.auth_ready.wait(2)
         record.auth_ready.clear()  # as if bob's AUTH_OK were still being sent
         try:
             started = time.monotonic()
