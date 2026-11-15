@@ -1,0 +1,46 @@
+---
+config:
+  sequence:
+    mirrorActors: false
+    actorMargin: 40
+    width: 160
+    height: 50
+    messageMargin: 26
+    boxMargin: 8
+    noteMargin: 8
+    messageFontSize: 15
+    noteFontSize: 14
+    actorFontSize: 15
+    wrap: false
+---
+sequenceDiagram
+    participant AM as Alice main thread<br/>(login_cli loop)
+    participant AR as Alice reader<br/>lanlink-client-reader
+    participant SW as Server worker<br/>lanlink-‹id› (Alice)
+    participant BR as Bob reader<br/>lanlink-client-reader
+
+    Note over AM: lanlink-cli-input reads "/msg bob hi"<br/>and puts it on the commands queue
+    Note over AM: send_private → _request:<br/>_pending[request_id] = Queue(1)
+    AM->>SW: CHAT_PRIVATE (request_id,<br/>recipient = bob, payload = "hi")
+    Note over SW: _route_private:<br/>bob in _users?
+
+    alt bob online
+        Note over SW: auth_ready.wait(1 s),<br/>recheck under _lock, stamp<br/>sender, message_id, timestamp_ms
+        SW->>BR: CHAT_PRIVATE (recipient,<br/>sender = alice, message_id,<br/>timestamp_ms)
+        Note over BR: display():<br/>"[alice -> bob] hi"
+        SW->>AR: CHAT_ACK (ref_request_id,<br/>message_id, timestamp_ms)
+        AR->>AM: reply put in queue<br/>_pending[ref_request_id]
+        Note over AM: print "Accepted: ‹message_id›"
+    else bob not in _users (offline or no such account)
+        SW->>AR: ERROR RECIPIENT_OFFLINE<br/>(ref_request_id)
+        AR->>AM: reply put in queue<br/>_pending[ref_request_id]
+        Note over AM: _request raises LanLinkError,<br/>print "Request failed: ..."
+    else write to bob's socket raises OSError
+        SW-xBR: _abort_connection:<br/>CLOSING, shutdown()
+        SW->>AR: ERROR CONNECTION_LOST<br/>(ref_request_id)
+        AR->>AM: reply put in queue<br/>_pending[ref_request_id]
+        Note over SW,BR: Bob's worker sees CLOSING at its<br/>next wakeup (≤ WORKER_WAKEUP_S,<br/>0.5 s), exits, removes bob from _users
+    end
+    Note over AM: read_next.set(): input thread<br/>shows the next "> " prompt
+
+    Note over AM,BR: Public chat (/all TEXT): CHAT_PUBLIC has no recipient.<br/>_route_public sends it to every other online user, skips<br/>(and aborts) a recipient whose write fails, then always<br/>sends CHAT_ACK. CLI: "Accepted (best-effort broadcast)".

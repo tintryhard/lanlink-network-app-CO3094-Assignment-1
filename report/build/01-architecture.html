@@ -1,0 +1,114 @@
+<h1>1 System Architecture</h1>
+<h2>1.1 Overview and deployment model</h2>
+<p>LanLink is a chat and file-transfer application for a local network, made of a server
+and a command-line client. One server runs on one host of the LAN. Each client keeps
+one TCP connection to it for the whole session, protected by TLS on the LAN. The server
+relays all traffic; clients never connect to each other (see 1.6).</p>
+<h2>1.2 Components and data paths</h2>
+<p>Figure 1 shows the threads of a running system with three clients.</p>
+<p><img src="../diagrams/architecture.svg" alt="Figure 1. LanLink runtime architecture: server threads, shared registries and clients. Thick links are TCP connections (TLS is required except on loopback); the dotted link is UDP discovery."></p>
+<p>The server&#39;s main thread runs the accept loop and starts one worker thread per accepted
+socket. The worker performs the TLS handshake, the <code>HELLO</code> exchange and the login, then
+handles that client&#39;s requests in order. Because the TLS handshake runs in the worker,
+a slow or hostile client cannot block new connections.</p>
+<p>The workers share three registries under one lock: open connections, logged-in users
+and active file transfers. To forward a message, the sender&#39;s worker looks up the
+recipient and writes the frame directly onto the recipient&#39;s connection; the
+recipient&#39;s own worker is not involved.</p>
+<p>An optional discovery thread answers each UDP <code>DISCOVER</code> sent to the server&#39;s port
+number with a <code>SERVER_INFO</code>. If that UDP port is reserved or already in use, the server
+prints a warning and runs without discovery.</p>
+<p>A logged-in client has four threads. An input thread queues the lines the user types.
+A reader thread, the only one that reads the socket, prints incoming chat, hands each
+reply to the request waiting for it and queues file events. The main thread handles one
+queued item at a time. For each accepted outgoing file, a sender thread sends the
+chunks, so the reader keeps reading. Table 11 in Appendix C lists every thread.</p>
+<h2>1.3 Layer separation</h2>
+<p>Table 1 maps the modules to the three layers that the specification asks to separate.</p>
+<p>Table 1. Layer separation: modules per layer.</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Modules</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>User interface</td>
+<td><code>client/__main__.py</code>, <code>client/display.py</code></td>
+</tr>
+<tr>
+<td>Network</td>
+<td><code>common/transport.py</code>, <code>common/tls.py</code>, <code>common/handshake.py</code>, <code>client/connection.py</code>, <code>client/discovery.py</code>, <code>client/private_chat.py</code>, <code>server/app.py</code>, <code>server/discovery.py</code>, <code>server/sessions.py</code></td>
+</tr>
+<tr>
+<td>Data processing</td>
+<td><code>common/protocol.py</code>, <code>common/builders.py</code>, <code>common/models.py</code>, <code>common/errors.py</code>, <code>transfer/*.py</code>, <code>server/auth.py</code></td>
+</tr>
+</tbody></table>
+<p>A search of the imports shows that no data-processing module imports the socket or TLS
+modules, and an automated test enforces this for the codec and the transfer engine. The
+transfer engines use the threading module only for a lock and a cancel flag; they start
+no threads. Two imperfections remain: the helper for the <code>HELLO</code> exchange sits in the
+shared package but sends and receives frames, and on the client one class both owns
+the socket and routes file messages to the transfer engines.</p>
+<h2>1.4 Concurrency model</h2>
+<p>All sockets are blocking, so each client gets its own server thread and a slow client
+delays nobody else. The number of workers is capped, at 64 by default; a connection
+above the cap is closed as soon as it is accepted.</p>
+<p>After <code>HELLO</code>, a worker never blocks in <code>recv()</code> for more than 0.5 s. On each wake-up it
+fails its overdue transfers and exits if another thread has marked its connection as
+closing. The wake-up is needed because on Windows, shutting a socket down from another
+thread does not wake a thread blocked reading it.</p>
+<p>Shared data is protected by a few locks, listed in Table 12 (Appendix D). They are
+always taken in one fixed order: the lock of a single transfer first, then the
+registry lock or a socket&#39;s write lock, never the reverse. The registry lock is held
+only for short dictionary and state updates, never while a thread reads or writes a
+socket or hashes a password. With one order and no socket reads or writes under the
+shared lock, two threads cannot end up waiting for each other&#39;s locks, and one slow
+client cannot hold up the rest.</p>
+<p>Several threads may write to the same socket: on the server, any worker that forwards
+to a client, next to that client&#39;s own worker; on the client, the main, reader and
+sender threads. Each connection has one write lock, held for the whole write of one
+frame, so frames from different threads never interleave. If a write fails halfway,
+the stream may hold a partial frame, so the server marks that client as closing and
+shuts its socket down; its worker exits at the next wake-up.</p>
+<p>The 10–20 concurrent clients the specification requires stay well below the cap. One test
+connects 20 clients at once and checks for 20 live workers after their parallel <code>HELLO</code>
+exchanges (localhost, no TLS, handshake only). Another sends 400 frames from 4 threads
+through one connection and receives all of them intact. Both pass on the current code.</p>
+<h2>1.5 Transport and security</h2>
+<p>Chat, control and file messages need reliable, ordered delivery, so they use TCP. UDP
+carries only discovery, because a client that does not yet know the server&#39;s address
+can still send a broadcast.</p>
+<p>TLS, version 1.2 or newer, comes from Python&#39;s standard library. The server holds a
+self-signed certificate and each client trusts exactly a copy of it, so only the holder
+of the private key can complete the handshake; the host-name check is skipped because
+the certificate is pinned and a LAN address may change. TLS protects the
+confidentiality and integrity of the whole stream, including the login password.
+Without TLS, both programs accept only loopback addresses.</p>
+<p>Passwords are stored as a random 16-byte salt and a PBKDF2-HMAC-SHA256 hash with
+600 000 iterations, and compared in constant time. An unknown user name is checked
+against a dummy record, so both kinds of failure take the same time. After three failed
+logins the server closes the connection.</p>
+<h2>1.6 Deviations from the specification</h2>
+<p>This subsection collects every point where LanLink differs from the specification.</p>
+<ul>
+<li><strong>Encryption.</strong> The rubric asks to encrypt the payloads; LanLink encrypts the whole
+TCP connection with TLS instead, which the specification allows (&quot;TLS/SSL sockets&quot;).
+UDP discovery is neither encrypted nor authenticated, but a fake server cannot pass
+the client&#39;s pinned-certificate check in the later TLS handshake.</li>
+<li><strong>Presence and user list.</strong> Discovery finds the server only; clients never broadcast
+their presence. The user list is pulled with <code>USER_LIST</code> after login and on request,
+never pushed, so it is not live.</li>
+<li><strong>Heartbeat.</strong> There is no heartbeat: <code>PING</code> and <code>PONG</code> exist in the codec but are
+never sent, and a logged-in client that sends <code>PING</code> gets an <code>ERROR</code>
+(<code>INVALID_FIELD</code>) and is disconnected. The server detects a silent client only by its
+idle timeout (45 s default in the code, 120 s from the command line) or a failed
+write. The 15 s heartbeat and 45 s idle values advertised in <code>HELLO_ACK</code> are unused.</li>
+<li><strong>Peer-to-peer.</strong> The specification describes peer-to-peer collaboration, but
+LanLink has no peer-to-peer path. The server relays all chat and file traffic.</li>
+<li><strong>End-of-Message flags.</strong> LanLink has no End-of-Message flag. Frames are delimited by
+a length prefix instead (see 2.1).</li>
+</ul>
+

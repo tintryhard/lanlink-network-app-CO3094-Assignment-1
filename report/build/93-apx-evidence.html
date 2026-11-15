@@ -1,0 +1,33 @@
+<h2>E Evidence</h2>
+<p>Table 13 links each challenge in Section 4 to the commits that introduced or fixed the behaviour and to the tests (under <code>tests/</code>) that check it.</p>
+<p>Table 13. Evidence for Section 4.</p>
+<table>
+<thead>
+<tr>
+<th>Challenge</th>
+<th>Commit(s)</th>
+<th>Test(s)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>4.1 Frame boundaries on a TCP stream</td>
+<td><code>aa72c1b</code> frame decoder; <code>81ba8d6</code> per-socket write lock</td>
+<td><code>test_all_splits_and_coalescing</code>; <code>test_concurrent_writes_preserve_frames</code></td>
+</tr>
+<tr>
+<td>4.2 Avoiding deadlock</td>
+<td><code>00c5897</code> no I/O or hashing under the registry lock; <code>4c0df38</code> per-transfer lock taken before the registry lock; <code>81c0068</code> client cleanup outside its shared lock</td>
+<td><code>test_cleanup_releases_shared_lock_during_socket_operations</code></td>
+</tr>
+<tr>
+<td>4.3 Detecting closed connections</td>
+<td><code>81c0068</code> client reader closes its socket; <code>0bf8895</code> peer marked <code>CLOSING</code>, 0.5 s worker wakeup on Windows</td>
+<td><code>test_forward_write_failure_returns_connection_lost</code>; <code>test_shutdown_terminates_client_readers_and_cleans_sessions</code></td>
+</tr>
+<tr>
+<td>4.4 Timeouts vs. blocking public-chat fan-out</td>
+<td><code>2e18eb0</code> issue recorded; <code>a9aae74</code> 1 s bound on the <code>AUTH_OK</code> wait</td>
+<td><code>test_chat_ack_arrives_before_client_timeout</code>; <code>test_public_waits_for_auth_ok</code></td>
+</tr>
+</tbody></table>
+

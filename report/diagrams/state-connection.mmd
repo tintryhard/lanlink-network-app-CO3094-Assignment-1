@@ -1,0 +1,22 @@
+%% Figure 3. Server-side connection states (ConnectionState, common/models.py).
+%% Transitions from server/app.py: serve_forever, _serve_client,
+%% _dispatch_client_messages, _receive_until_deadline, _abort_connection, shutdown.
+%% "fatal error" = bad frame (ProtocolError), idle timeout, or an unhandled type
+%% (HELLO, PING, PONG) after its ERROR reply; see section 2.7.1. LOGOUT before
+%% login gets ERROR NOT_AUTHENTICATED and the connection stays open.
+stateDiagram-v2
+    direction TB
+    [*] --> CONNECTING : accept()
+    CONNECTING --> HELLO_ACCEPTED : HELLO / HELLO_ACK
+    HELLO_ACCEPTED --> AUTHENTICATED : AUTH / AUTH_OK
+
+    CONNECTING --> CLOSING : shutdown()
+    HELLO_ACCEPTED --> CLOSING : shutdown()
+    AUTHENTICATED --> CLOSING : shutdown() or failed write
+
+    CONNECTING --> CLOSED : TLS/HELLO failure, timeout, EOF
+    HELLO_ACCEPTED --> CLOSED : EOF, fatal error, 3rd AUTH_FAILED
+    AUTHENTICATED --> CLOSED : LOGOUT, EOF, fatal error
+    CLOSING --> CLOSED : worker loop exits
+
+    CLOSED --> [*] : record removed

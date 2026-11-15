@@ -1,0 +1,1133 @@
+{
+ "version": 1,
+ "pages": [
+  {
+   "id": "p1",
+   "title": "System Architecture",
+   "shapes": [
+    {
+     "id": "cA",
+     "type": "rectangleContainer",
+     "boundingBox": {
+      "x": 20,
+      "y": 70,
+      "w": 580,
+      "h": 468
+     },
+     "containerTitle": {
+      "text": "Client A (python -m client --username …)"
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#F7F9FC"
+      },
+      "stroke": {
+       "color": "#555555",
+       "width": 2,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "cB",
+     "type": "rectangleContainer",
+     "boundingBox": {
+      "x": 20,
+      "y": 608,
+      "w": 580,
+      "h": 326
+     },
+     "containerTitle": {
+      "text": "Client B (same threads)"
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#F7F9FC"
+      },
+      "stroke": {
+       "color": "#555555",
+       "width": 2,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "srv",
+     "type": "rectangleContainer",
+     "boundingBox": {
+      "x": 710,
+      "y": 70,
+      "w": 580,
+      "h": 1154
+     },
+     "containerTitle": {
+      "text": "Server process (python -m server)"
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#F7F7F2"
+      },
+      "stroke": {
+       "color": "#555555",
+       "width": 2,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "lock",
+     "type": "rectangleContainer",
+     "boundingBox": {
+      "x": 1030,
+      "y": 310,
+      "w": 240,
+      "h": 764
+     },
+     "containerTitle": {
+      "text": "guarded by TCPServer._lock"
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFF8DC"
+      },
+      "stroke": {
+       "color": "#7A5B00",
+       "width": 2,
+       "style": "dashed"
+      }
+     }
+    },
+    {
+     "id": "a_in",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 40,
+      "y": 110,
+      "w": 250,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>lanlink-cli-input</b><br>reads stdin</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "a_main",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 40,
+      "y": 230,
+      "w": 250,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>main thread</b><br>command loop</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "a_rd",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 40,
+      "y": 350,
+      "w": 250,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>lanlink-client-reader</b><br>only thread that reads</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "a_send",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 40,
+      "y": 444,
+      "w": 250,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>lanlink-file-sender</b><br>one per accepted offer</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "a_sock",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 390,
+      "y": 230,
+      "w": 190,
+      "h": 278
+     },
+     "text": "<span style=\"font-size:20px\"><b>socket +<br>SocketTransport</b><br>_write_lock</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#E3ECF7"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "b_in",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 40,
+      "y": 638,
+      "w": 250,
+      "h": 44
+     },
+     "text": "<span style=\"font-size:20px\">lanlink-cli-input</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "b_main",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 40,
+      "y": 712,
+      "w": 250,
+      "h": 44
+     },
+     "text": "<span style=\"font-size:20px\">main thread</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "b_rd",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 40,
+      "y": 786,
+      "w": 250,
+      "h": 44
+     },
+     "text": "<span style=\"font-size:20px\">lanlink-client-reader</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "b_send",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 40,
+      "y": 860,
+      "w": 250,
+      "h": 44
+     },
+     "text": "<span style=\"font-size:20px\">lanlink-file-sender</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "b_sock",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 390,
+      "y": 712,
+      "w": 190,
+      "h": 192
+     },
+     "text": "<span style=\"font-size:20px\"><b>socket +<br>SocketTransport</b><br>_write_lock</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#E3ECF7"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "c",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 330,
+      "y": 980,
+      "w": 250,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>Client C</b><br>(same threads)</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#F7F9FC"
+      },
+      "stroke": {
+       "color": "#555555",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "d",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 20,
+      "y": 1130,
+      "w": 360,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>python -m client --discover</b><br>main thread only; exits after 2 s</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#F7F9FC"
+      },
+      "stroke": {
+       "color": "#555555",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "s_main",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 740,
+      "y": 110,
+      "w": 300,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>main thread</b><br>serve_forever(): accept loop</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "w_a",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 740,
+      "y": 350,
+      "w": 220,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>worker lanlink-‹id›</b><br>_serve_client (A)</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "w_b",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 740,
+      "y": 776,
+      "w": 220,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>worker lanlink-‹id›</b><br>_serve_client (B)</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "w_c",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 740,
+      "y": 980,
+      "w": 220,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>worker lanlink-‹id›</b><br>_serve_client (C)</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "reg",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 1065,
+      "y": 340,
+      "w": 170,
+      "h": 714
+     },
+     "text": "<span style=\"font-size:20px\"><b>_connections<br>_users<br>_transfers</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#E3ECF7"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "disc",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 880,
+      "y": 1130,
+      "w": 300,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>lanlink-discovery (UDP)</b><br>optional: off if bind fails</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFFFFF"
+      },
+      "stroke": {
+       "color": "#333333",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    }
+   ],
+   "lines": [
+    {
+     "id": "a1",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "a_in",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "a_main",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\">line → queue</span>",
+       "position": 0.5,
+       "side": "middle"
+      }
+     ]
+    },
+    {
+     "id": "a2",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "a_rd",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "a_main",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\">file event → queue</span>",
+       "position": 0.5,
+       "side": "middle"
+      }
+     ]
+    },
+    {
+     "id": "a3",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "a_main",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "a_sock",
+      "position": {
+       "x": 0,
+       "y": 0.115
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\">send()</span>",
+       "position": 0.5,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "a4",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "a_rd",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "a_sock",
+      "position": {
+       "x": 0,
+       "y": 0.547
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\">receive()</span>",
+       "position": 0.5,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "a5",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "a_send",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "a_sock",
+      "position": {
+       "x": 0,
+       "y": 0.885
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\">send()</span>",
+       "position": 0.5,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "b1",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "b_in",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "b_main",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "b2",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "b_rd",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "b_main",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "b3",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "b_main",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "b_sock",
+      "position": {
+       "x": 0,
+       "y": 0.115
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "b4",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "b_rd",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "b_sock",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "b5",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "b_send",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "b_sock",
+      "position": {
+       "x": 0,
+       "y": 0.885
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "tA",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "a_sock",
+      "position": {
+       "x": 1,
+       "y": 0.547
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "w_a",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#1F4E79",
+      "width": 5,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\"><b>TCP + TLS</b></span>",
+       "position": 0.4,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "tB",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "b_sock",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "w_b",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#1F4E79",
+      "width": 5,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\"><b>TCP + TLS</b></span>",
+       "position": 0.4,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "tC",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "c",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "w_c",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#1F4E79",
+      "width": 5,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\"><b>TCP + TLS</b></span>",
+       "position": 0.4,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "m1",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "s_main",
+      "position": {
+       "x": 0.367,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "w_a",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\">one thread per<br>accepted socket</span>",
+       "position": 0.5,
+       "side": "middle"
+      }
+     ]
+    },
+    {
+     "id": "m2",
+     "lineType": "elbow",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "s_main",
+      "position": {
+       "x": 0.817,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "w_b",
+      "position": {
+       "x": 1,
+       "y": 0.3
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "m3",
+     "lineType": "elbow",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "s_main",
+      "position": {
+       "x": 0.893,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "w_c",
+      "position": {
+       "x": 1,
+       "y": 0.3
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "r1",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "w_a",
+      "position": {
+       "x": 1,
+       "y": 0.7
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "reg",
+      "position": {
+       "x": 0,
+       "y": 0.077
+      }
+     },
+     "stroke": {
+      "color": "#2F4B7C",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "r2",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "w_b",
+      "position": {
+       "x": 1,
+       "y": 0.7
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "reg",
+      "position": {
+       "x": 0,
+       "y": 0.673
+      }
+     },
+     "stroke": {
+      "color": "#2F4B7C",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "r3",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "w_c",
+      "position": {
+       "x": 1,
+       "y": 0.7
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "reg",
+      "position": {
+       "x": 0,
+       "y": 0.959
+      }
+     },
+     "stroke": {
+      "color": "#2F4B7C",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "u",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "d",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "disc",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "dashed"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\">UDP: DISCOVER broadcast to<br>255.255.255.255:port,<br>SERVER_INFO unicast reply</span>",
+       "position": 0.3,
+       "side": "top"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

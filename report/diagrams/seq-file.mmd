@@ -1,0 +1,56 @@
+---
+config:
+  sequence:
+    mirrorActors: false
+    actorMargin: 20
+    width: 150
+    height: 50
+    messageMargin: 20
+    boxMargin: 8
+    noteMargin: 8
+    messageFontSize: 16
+    noteFontSize: 15
+    actorFontSize: 14
+    wrap: false
+---
+sequenceDiagram
+    participant AM as Alice main<br/>thread
+    participant AR as Alice<br/>lanlink-client-reader
+    participant AS as Alice<br/>lanlink-file-sender
+    participant SA as Server worker<br/>lanlink-‹id› (Alice)
+    participant SB as Server worker<br/>lanlink-‹id› (Bob)
+    participant BR as Bob<br/>lanlink-client-reader
+    participant BM as Bob main<br/>thread
+
+    Note over AM,AR: /offer bob a.pdf → inspect_file:<br/>size + SHA-256 of the whole file
+    AM->>SA: FILE_OFFER (transfer_id, recipient,<br/>filename, size, sha256, chunk_size)
+    Note over SA,SB: TransferSession<br/>OFFERED
+    SA->>BR: FILE_OFFER (+ sender)
+    BR->>BM: event
+    Note over BM: /accept ‹id›<br/>accept_file:<br/>Receiver.start<br/>opens .part file
+    BM->>SB: FILE_ACCEPT (transfer_id)
+    Note over SA,SB: ACCEPTED
+    SB->>AR: FILE_ACCEPT
+    SB->>BR: FILE_ACCEPT echo
+    Note over AR: SendSession<br/>ACCEPTED
+    AR->>AS: start thread
+    AR->>AM: event
+    BR->>BM: event
+
+    loop seq = 0 … n−1, SendSession.outgoing()
+        AS->>SA: FILE_CHUNK<br/>(seq, data)
+        Note over SA,SB: _relay_file_content<br/>TRANSFERRING
+        SA->>BR: FILE_CHUNK (seq, data)
+        Note over BR: Receiver.write:<br/>seq == expected,<br/>size check,<br/>append, hash,<br/>progress bar
+    end
+    AS->>SA: FILE_END
+    Note over SA,SB: VERIFYING
+    SA->>BR: FILE_END (total_chunks,<br/>total_bytes)
+    Note over BR: Receiver.finish:<br/>counts, SHA-256<br/>== offer.sha256,<br/>fsync, rename<br/>.part → final
+    BR->>BM: final snapshot
+    BR->>SB: FILE_RESULT<br/>(ok = true,<br/>received_bytes,<br/>sha256)
+    Note over SA,SB: COMPLETED,<br/>session removed
+    SB->>AR: FILE_RESULT
+    Note over AR: SendSession<br/>checks size<br/>and sha256:<br/>COMPLETED
+    AR->>AM: final snapshot
+    Note over AM,BM: No per-chunk ACK: TCP flow control paces the sender thread.<br/>The server relays chunks without reading the file content.<br/>"event" and "final snapshot" are items put on that client's<br/>commands queue and printed by its main thread.

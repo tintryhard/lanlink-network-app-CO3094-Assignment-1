@@ -1,0 +1,44 @@
+---
+config:
+  sequence:
+    mirrorActors: false
+    actorMargin: 25
+    width: 150
+    height: 50
+    messageMargin: 22
+    boxMargin: 8
+    noteMargin: 8
+    messageFontSize: 16
+    noteFontSize: 15
+    actorFontSize: 14
+    wrap: false
+---
+sequenceDiagram
+    participant AR as Alice<br/>lanlink-client-reader
+    participant AS as Alice<br/>lanlink-file-sender
+    participant SA as Server worker<br/>lanlink-‹id› (Alice)
+    participant SB as Server worker<br/>lanlink-‹id› (Bob)
+    participant BR as Bob<br/>lanlink-client-reader
+    participant BM as Bob main<br/>thread
+
+    Note over AR,BM: Start: Alice sent FILE_OFFER and the server forwarded it to Bob<br/>(TransferSession OFFERED, see Figure 7)
+
+    alt Bob rejects the offer
+        Note over BM: /reject ‹id› [reason]<br/>reject_file: no<br/>Receiver, no .part
+        BM->>SB: FILE_REJECT (transfer_id, reason)
+        Note over SA,SB: REJECTED,<br/>session deleted
+        SB->>AR: FILE_REJECT
+        SB->>BR: FILE_REJECT echo
+        BR->>BM: event
+        Note over AR: SendSession<br/>REJECTED<br/>(REJECTED_BY_PEER)
+        Note over AR,AS: no sender thread was started
+    else sender cancels during the chunk loop
+        Note over AS: iter_chunks raises<br/>TransferError, e.g.<br/>SOURCE_CHANGED (file<br/>modified while sent).<br/>SendSession FAILED
+        AS->>SA: FILE_CANCEL<br/>(transfer_id,<br/>reason)
+        Note over SA,SB: CANCELLED,<br/>session deleted
+        SA->>BR: FILE_CANCEL (reason)
+        Note over BR: Receiver:<br/>_fail_and_cleanup<br/>deletes .part,<br/>CANCELLED<br/>(CANCELLED_BY_PEER)
+        BR->>BM: final snapshot
+    end
+
+    Note over AR,BM: The CLI has no cancel command. SendSession.cancel() and Receiver.cancel()<br/>exist but nothing calls them, so FILE_CANCEL is only sent by<br/>SendSession.outgoing() after a local read error.

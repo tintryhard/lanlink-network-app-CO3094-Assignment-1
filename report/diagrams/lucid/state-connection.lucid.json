@@ -1,0 +1,544 @@
+{
+ "version": 1,
+ "pages": [
+  {
+   "id": "p1",
+   "title": "Connection States",
+   "shapes": [
+    {
+     "id": "start",
+     "type": "circle",
+     "boundingBox": {
+      "x": 538,
+      "y": 30,
+      "w": 24,
+      "h": 24
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#222222"
+      },
+      "stroke": {
+       "color": "#222222",
+       "width": 1,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "s1",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 420,
+      "y": 120,
+      "w": 260,
+      "h": 70
+     },
+     "text": "<span style=\"font-size:20px\"><b>CONNECTING</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#EAF1FB"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "s2",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 420,
+      "y": 320,
+      "w": 260,
+      "h": 70
+     },
+     "text": "<span style=\"font-size:20px\"><b>HELLO_ACCEPTED</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#EAF1FB"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "s3",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 420,
+      "y": 520,
+      "w": 260,
+      "h": 70
+     },
+     "text": "<span style=\"font-size:20px\"><b>AUTHENTICATED</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#EAF1FB"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "closing",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 60,
+      "y": 760,
+      "w": 260,
+      "h": 70
+     },
+     "text": "<span style=\"font-size:20px\"><b>CLOSING</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFF3D6"
+      },
+      "stroke": {
+       "color": "#7A5B00",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "closed",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 780,
+      "y": 760,
+      "w": 260,
+      "h": 70
+     },
+     "text": "<span style=\"font-size:20px\"><b>CLOSED</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#E6E6E6"
+      },
+      "stroke": {
+       "color": "#444444",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "end",
+     "type": "circle",
+     "boundingBox": {
+      "x": 898,
+      "y": 910,
+      "w": 24,
+      "h": 24
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#222222"
+      },
+      "stroke": {
+       "color": "#222222",
+       "width": 1,
+       "style": "solid"
+      }
+     }
+    }
+   ],
+   "lines": [
+    {
+     "id": "l0",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "start",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "s1",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">accept()</span>",
+       "position": 0.5,
+       "side": "middle"
+      }
+     ]
+    },
+    {
+     "id": "l1",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "s1",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "s2",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">HELLO / HELLO_ACK</span>",
+       "position": 0.5,
+       "side": "middle"
+      }
+     ]
+    },
+    {
+     "id": "l2",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "s2",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "s3",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">AUTH / AUTH_OK</span>",
+       "position": 0.5,
+       "side": "middle"
+      }
+     ]
+    },
+    {
+     "id": "l3",
+     "lineType": "elbow",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "s1",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "closing",
+      "position": {
+       "x": 0.25,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">shutdown()</span>",
+       "position": 0.16,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "l4",
+     "lineType": "elbow",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "s2",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "closing",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">shutdown()</span>",
+       "position": 0.18,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "l5",
+     "lineType": "elbow",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "s3",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "closing",
+      "position": {
+       "x": 0.75,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">shutdown() or<br>failed write</span>",
+       "position": 0.22,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "l6",
+     "lineType": "elbow",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "s1",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "closed",
+      "position": {
+       "x": 0.75,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">TLS/HELLO failure,<br>timeout, EOF</span>",
+       "position": 0.16,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "l7",
+     "lineType": "elbow",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "s2",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "closed",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">EOF, fatal error,<br>3rd AUTH_FAILED</span>",
+       "position": 0.18,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "l8",
+     "lineType": "elbow",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "s3",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "closed",
+      "position": {
+       "x": 0.25,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">LOGOUT, EOF,<br>fatal error</span>",
+       "position": 0.22,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "l9",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "closing",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "closed",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">worker loop exits</span>",
+       "position": 0.5,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "l10",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "closed",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "end",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">record removed</span>",
+       "position": 0.5,
+       "side": "middle"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

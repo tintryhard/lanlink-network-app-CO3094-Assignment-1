@@ -1,0 +1,84 @@
+@startuml
+participant "Alice main\nthread" as AM
+participant "Alice\nlanlink-\nclient-reader" as AR
+participant "Alice\nlanlink-\nfile-sender" as AS
+participant "Server worker\nlanlink-‹id›\n(Alice)" as SA
+participant "Server worker\nlanlink-‹id›\n(Bob)" as SB
+participant "Bob\nlanlink-\nclient-reader" as BR
+participant "Bob main\nthread" as BM
+
+note over AM, AR
+∕offer bob a.pdf → inspect_file:
+size + SHA-256 of the whole file
+end note
+AM ->> SA : FILE_OFFER (transfer_id, recipient,\nfilename, size, sha256, chunk_size)
+note over SA, SB
+TransferSession
+OFFERED
+end note
+SA ->> BR : FILE_OFFER (+ sender)
+BR ->> BM : event
+note over BM
+∕accept ‹id›
+accept_file:
+Receiver.start
+opens .part file
+end note
+BM ->> SB : FILE_ACCEPT (transfer_id)
+note over SA, SB : ACCEPTED
+SB ->> AR : FILE_ACCEPT
+SB ->> BR : FILE_ACCEPT echo
+note over AR
+SendSession
+ACCEPTED
+end note
+AR ->> AS : start thread
+AR ->> AM : event
+BR ->> BM : event
+
+loop seq = 0 … n−1, SendSession.outgoing()
+  AS ->> SA : FILE_CHUNK\n(seq, data)
+  note over SA, SB
+  _relay_file_content
+  TRANSFERRING
+  end note
+  SA ->> BR : FILE_CHUNK (seq, data)
+  note over BR
+  Receiver.write:
+  seq == expected,
+  size check,
+  append, hash,
+  progress bar
+  end note
+end
+AS ->> SA : FILE_END
+note over SA, SB : VERIFYING
+SA ->> BR : FILE_END (total_chunks,\ntotal_bytes)
+note over BR
+Receiver.finish:
+counts, SHA-256
+== offer.sha256,
+fsync, rename
+.part → final
+end note
+BR ->> BM : final snapshot
+BR ->> SB : FILE_RESULT\n(ok = true,\nreceived_bytes,\nsha256)
+note over SA, SB
+COMPLETED,
+session removed
+end note
+SB ->> AR : FILE_RESULT
+note over AR
+SendSession
+checks size
+and sha256:
+COMPLETED
+end note
+AR ->> AM : final snapshot
+note over AM, BM
+No per-chunk ACK: TCP flow control paces the sender thread.
+The server relays chunks without reading the file content.
+"event" and "final snapshot" are items put on that client's
+commands queue and printed by its main thread.
+end note
+@enduml

@@ -1,0 +1,30 @@
+%% Figure 4. File-transfer states (TransferStatus) and the legal moves in
+%% ALLOWED_TRANSITIONS (common/models.py). Triggers from transfer/sender.py,
+%% transfer/receiver.py and server/app.py (_negotiate_file_transfer,
+%% _status_after_message, _fail_transfer_and_notify).
+%% Every one of the four non-final states may move to CANCELLED or FAILED,
+%% so those edges are drawn once from the composite state.
+stateDiagram-v2
+    direction TB
+    [*] --> OFFERED : FILE_OFFER
+    state "Non-final states (is_terminal is False)" as Active {
+        OFFERED --> ACCEPTED : FILE_ACCEPT
+        ACCEPTED --> TRANSFERRING : first FILE_CHUNK
+        TRANSFERRING --> VERIFYING : FILE_END
+    }
+    OFFERED --> REJECTED : FILE_REJECT
+    VERIFYING --> COMPLETED : FILE_RESULT ok=true
+    Active --> CANCELLED : FILE_CANCEL
+    Active --> FAILED : ERROR, FILE_RESULT ok=false, timeout, disconnect
+    COMPLETED --> [*]
+    REJECTED --> [*]
+    CANCELLED --> [*]
+    FAILED --> [*]
+
+    note right of Active
+        Server relay only (no check_transition):
+        ACCEPTED to VERIFYING on FILE_END
+        for an empty file, and
+        TRANSFERRING to TRANSFERRING
+        on every FILE_CHUNK.
+    end note

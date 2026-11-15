@@ -1,0 +1,359 @@
+<h1>2 Protocol Specification</h1>
+<p>LanLink uses one application protocol, version 1. Chat, file and session messages travel as frames on one TCP connection per client, inside TLS when it is enabled (section 1.5). UDP carries only server discovery (2.8). The same schema check runs when a message is built, encoded and decoded, so neither side can send a message that breaks the field schema.</p>
+<h2>2.1 Design rationale</h2>
+<p>TCP delivers a byte stream, so one <code>recv()</code> can return part of a frame or several frames. Instead of an end-of-message flag, every frame starts with the length of its header, and the header states the length of its payload. The receiver therefore always knows how many bytes it still needs, and file data needs no escaping. The header is canonical JSON (sorted keys, no spaces, UTF-8): it is readable in Wireshark on a plaintext loopback server, and the same message always gives the same bytes, so the tests compare frames byte for byte. The payload stays outside the JSON as raw bytes, so file chunks need no base64 (which adds one third) and the login password never appears in the header.</p>
+<h2>2.2 Frame format</h2>
+<h3>2.2.1 Byte layout and byte order</h3>
+<p>Figure 2 shows one frame. The first 4 bytes are an unsigned 32-bit integer in big-endian (network) byte order. It gives N, the length of the JSON header in bytes, and counts neither itself nor the payload. N must be between 1 and 16 384. The header is N bytes of UTF-8 JSON, and its <code>payload_length</code> field gives P, the number of payload bytes that follow. P may be 0. The next frame starts immediately after the payload. The largest valid frame is a <code>FILE_CHUNK</code> or a <code>USER_LIST</code> reply, both with a 65 536-byte payload ceiling: 4 + 16 384 + 65 536 = 81 924 bytes.</p>
+<p><img src="../diagrams/frame-layout.svg" alt="Figure 2. Frame layout: length prefix, JSON header, payload."></p>
+<h3>2.2.2 How a receiver reads a frame</h3>
+<p>The receiver reads up to 64 KiB per <code>recv()</code> and feeds whatever arrives to a frame decoder. The decoder collects bytes in three stages and keeps any leftover bytes for the next stage:</p>
+<ol>
+<li><strong>Exactly 4 bytes</strong> of prefix. They are decoded as N and checked: 0 gives <code>BAD_FRAME</code>, and more than 16 384 gives <code>HEADER_TOO_LARGE</code>. The check happens before any header byte is buffered.</li>
+<li><strong>Exactly N bytes</strong> of header. They are parsed as strict JSON and validated against the schema of their type and direction (2.3, 2.4). The payload ceiling is checked here too, so a peer cannot make the receiver buffer more payload than the limit allows.</li>
+<li><strong>Exactly <code>payload_length</code> bytes</strong> of payload. They are checked against the type (for example strict UTF-8 for chat), and the complete message is returned.</li>
+</ol>
+<p>Several frames can complete in one <code>recv()</code>, and one frame can span many. After any protocol error the decoder is &quot;poisoned&quot;: every later call raises the same error, because the position of the next frame boundary is no longer known. The stream is never resynchronised. End of stream exactly at a frame boundary is a clean close. End of stream inside a frame gives <code>UNEXPECTED_EOF</code>.</p>
+<h3>2.2.3 Worked example: a <code>CHAT_PRIVATE</code> frame</h3>
+<p>Listing 1 shows the real bytes the encoder produces when a client sends the text <code>Hi Binh!</code> privately to user <code>binh</code>. The <code>request_id</code> is fixed at <code>r1</code> so that the output can be reproduced; a real client uses a random UUID in hex. The prefix <code>00 00 00 5b</code> gives N = 91 header bytes (offsets 0x04 to 0x5e). The header has <code>payload_length</code> 8, so the payload is the 8 bytes at offsets 0x5f to 0x66, and the frame is 103 bytes long. The keys appear in sorted order because encoding is canonical.</p>
+<pre><code>0000  00 00 00 5b 7b 22 70 61 79 6c 6f 61 64 5f 6c 65  ...[{&quot;payload_le
+0010  6e 67 74 68 22 3a 38 2c 22 72 65 63 69 70 69 65  ngth&quot;:8,&quot;recipie
+0020  6e 74 22 3a 22 62 69 6e 68 22 2c 22 72 65 71 75  nt&quot;:&quot;binh&quot;,&quot;requ
+0030  65 73 74 5f 69 64 22 3a 22 72 31 22 2c 22 74 79  est_id&quot;:&quot;r1&quot;,&quot;ty
+0040  70 65 22 3a 22 43 48 41 54 5f 50 52 49 56 41 54  pe&quot;:&quot;CHAT_PRIVAT
+0050  45 22 2c 22 76 65 72 73 69 6f 6e 22 3a 31 7d 48  E&quot;,&quot;version&quot;:1}H
+0060  69 20 42 69 6e 68 21                             i Binh!
+
+prefix  : 00 00 00 5b  -&gt; N = 91
+header  : {&quot;payload_length&quot;:8,&quot;recipient&quot;:&quot;binh&quot;,&quot;request_id&quot;:&quot;r1&quot;,
+           &quot;type&quot;:&quot;CHAT_PRIVATE&quot;,&quot;version&quot;:1}
+payload : 48 69 20 42 69 6e 68 21  -&gt; &quot;Hi Binh!&quot; (8 bytes, UTF-8)
+</code></pre>
+<p>Listing 1. A client-to-server <code>CHAT_PRIVATE</code> frame in hex, as produced by the encoder.</p>
+<h2>2.3 Common header fields and identifier formats</h2>
+<p>Every header carries the four common fields in Table 2. A reply also carries <code>ref_request_id</code>.</p>
+<p>Table 2. Common header fields.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>JSON type</th>
+<th>Required</th>
+<th>Meaning and format</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>version</code></td>
+<td>integer</td>
+<td>every message</td>
+<td>Protocol version. It must be <code>1</code>, otherwise <code>UNSUPPORTED_VERSION</code>.</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td>string</td>
+<td>every message</td>
+<td>One of the 21 message types (<code>common/models.py</code>). An unknown value gives <code>UNKNOWN_TYPE</code>.</td>
+</tr>
+<tr>
+<td><code>request_id</code></td>
+<td>string</td>
+<td>every message</td>
+<td>ID of this message: 1 to 64 characters from <code>A-Z a-z 0-9 _ -</code>. The client and server use a random UUID in hex.</td>
+</tr>
+<tr>
+<td><code>payload_length</code></td>
+<td>integer</td>
+<td>every message</td>
+<td>Number of payload bytes after the header, from 0 to the ceiling of the type (Table 10, Appendix B).</td>
+</tr>
+<tr>
+<td><code>ref_request_id</code></td>
+<td>string</td>
+<td>replies (per type, Tables 3 to 7)</td>
+<td>The <code>request_id</code> of the message being answered. Same format as <code>request_id</code>.</td>
+</tr>
+</tbody></table>
+<p>A <code>transfer_id</code> is 32 lowercase hex characters and a <code>sha256</code> is 64. Validation is strict. The field set must be exact: a missing field gives <code>MISSING_FIELD</code> and an extra one <code>INVALID_FIELD</code>. Integers must be JSON integers (not booleans), strings must be non-empty without control characters, and duplicate keys, <code>NaN</code> or <code>Infinity</code> give <code>BAD_JSON</code>. String lengths are in Table 10 (Appendix B), and the remaining rules are in the codec (<code>common/protocol.py</code>).</p>
+<p>The receiver also checks direction. <code>HELLO</code> and <code>AUTH</code> come only from a client; <code>HELLO_ACK</code>, <code>AUTH_OK</code>, <code>ERROR</code> and <code>CHAT_ACK</code> only from the server; <code>DISCOVER</code> and <code>SERVER_INFO</code> only over UDP. A type in the wrong direction gives <code>INVALID_FIELD</code>.</p>
+<h2>2.4 Message catalogue</h2>
+<p>There are 21 message types, 19 on TCP and 2 on UDP, listed by group in Tables 3 to 7. &quot;opt.&quot; marks an optional field; every other listed field is required. A type without a listed payload must have an empty payload. Section 3 shows the order of messages in a conversation.</p>
+<h3>2.4.1 Session</h3>
+<p>Table 3. Session messages.</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Direction</th>
+<th>Header fields (besides common)</th>
+<th>Payload</th>
+<th>Reply</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>HELLO</code></td>
+<td>C→S</td>
+<td><code>client_name</code> (≤64), <code>client_version</code> (≤32)</td>
+<td>none</td>
+<td><code>HELLO_ACK</code></td>
+</tr>
+<tr>
+<td><code>HELLO_ACK</code></td>
+<td>S→C</td>
+<td><code>ref_request_id</code>, <code>server_name</code> (≤64), <code>limits</code> (object with exactly the 8 limit keys listed in Appendix B)</td>
+<td>none</td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>AUTH</code></td>
+<td>C→S</td>
+<td><code>username</code> (≤32, no whitespace)</td>
+<td>password, UTF-8, 1–256 B</td>
+<td><code>AUTH_OK</code>, or <code>ERROR</code></td>
+</tr>
+<tr>
+<td><code>AUTH_OK</code></td>
+<td>S→C</td>
+<td><code>ref_request_id</code>, <code>username</code></td>
+<td>none</td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>USER_LIST</code> request</td>
+<td>C→S</td>
+<td>none</td>
+<td>must be empty</td>
+<td><code>USER_LIST</code> reply, or <code>ERROR</code></td>
+</tr>
+<tr>
+<td><code>USER_LIST</code> reply</td>
+<td>S→C</td>
+<td><code>ref_request_id</code></td>
+<td>JSON <code>{&quot;users&quot;:[{&quot;username&quot;,&quot;online&quot;,&quot;ip&quot;,&quot;port&quot;}]}</code>, 1–65 536 B</td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>LOGOUT</code></td>
+<td>C→S</td>
+<td>opt. <code>reason</code> (≤128)</td>
+<td>none</td>
+<td>After login: none; the server closes the connection. Before login: <code>ERROR NOT_AUTHENTICATED</code>, and the connection stays open</td>
+</tr>
+<tr>
+<td><code>PING</code></td>
+<td>either (unused)</td>
+<td>none</td>
+<td>none</td>
+<td><code>PONG</code> (never sent)</td>
+</tr>
+<tr>
+<td><code>PONG</code></td>
+<td>either (unused)</td>
+<td><code>ref_request_id</code></td>
+<td>none</td>
+<td>none</td>
+</tr>
+</tbody></table>
+<p>The client checks that the <code>limits</code> object in <code>HELLO_ACK</code> is valid (an invalid one fails the handshake) but never applies the values (see 1.6). In the <code>USER_LIST</code> reply, <code>ip</code> and <code>port</code> may be <code>null</code>. <code>PING</code> and <code>PONG</code> have no handler: a client that sends <code>PING</code> gets an <code>ERROR</code> and is disconnected (Table 9; see 1.6).</p>
+<h3>2.4.2 Chat</h3>
+<p>Table 4. Chat messages.</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Direction</th>
+<th>Header fields (besides common)</th>
+<th>Payload</th>
+<th>Reply</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>CHAT_PUBLIC</code></td>
+<td>C→S</td>
+<td>none</td>
+<td>UTF-8 text, 1–8 192 B</td>
+<td><code>CHAT_ACK</code></td>
+</tr>
+<tr>
+<td><code>CHAT_PUBLIC</code> forwarded</td>
+<td>S→C</td>
+<td><code>sender</code>, <code>message_id</code>, <code>timestamp_ms</code></td>
+<td>same text</td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>CHAT_PRIVATE</code></td>
+<td>C→S</td>
+<td><code>recipient</code> (≤32)</td>
+<td>UTF-8 text, 1–8 192 B</td>
+<td><code>CHAT_ACK</code>, or <code>ERROR</code></td>
+</tr>
+<tr>
+<td><code>CHAT_PRIVATE</code> forwarded</td>
+<td>S→C</td>
+<td><code>recipient</code>, <code>sender</code>, <code>message_id</code>, <code>timestamp_ms</code></td>
+<td>same text</td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>CHAT_ACK</code></td>
+<td>S→C</td>
+<td><code>ref_request_id</code>, <code>message_id</code>, <code>timestamp_ms</code>, <code>status</code> (must be <code>&quot;accepted&quot;</code>)</td>
+<td>none</td>
+<td>none</td>
+</tr>
+</tbody></table>
+<p>The forwarded copy has a new <code>request_id</code> and the server-stamped <code>sender</code>, <code>message_id</code> and <code>timestamp_ms</code> (Unix milliseconds; 2.6.3). The same <code>message_id</code> and <code>timestamp_ms</code> return in <code>CHAT_ACK</code>, which means &quot;accepted by the server&quot;, not &quot;delivered&quot;: a public message is acknowledged even if there were no recipients or some deliveries failed.</p>
+<h3>2.4.3 File transfer</h3>
+<p>Table 5. File-transfer messages. &quot;Sender&quot; and &quot;recipient&quot; are the two clients of a transfer. Every message passes through the server.</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Sent by</th>
+<th>Header fields (besides common)</th>
+<th>Payload</th>
+<th>Server action</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>FILE_OFFER</code></td>
+<td>sender</td>
+<td><code>transfer_id</code>, <code>recipient</code>, <code>filename</code>, <code>size</code>, <code>sha256</code>, <code>chunk_size</code>; the forwarded copy adds <code>sender</code></td>
+<td>none</td>
+<td>Creates an <code>OFFERED</code> session and forwards the offer to the recipient, or replies <code>ERROR</code></td>
+</tr>
+<tr>
+<td><code>FILE_ACCEPT</code></td>
+<td>recipient</td>
+<td><code>transfer_id</code></td>
+<td>none</td>
+<td>Sets <code>ACCEPTED</code>, forwards to the sender, then echoes back to the recipient</td>
+</tr>
+<tr>
+<td><code>FILE_REJECT</code></td>
+<td>recipient</td>
+<td><code>transfer_id</code>; opt. <code>reason</code> (≤128, free text)</td>
+<td>none</td>
+<td>Sets <code>REJECTED</code>, forwards to the sender, then echoes back to the recipient</td>
+</tr>
+<tr>
+<td><code>FILE_CHUNK</code></td>
+<td>sender</td>
+<td><code>transfer_id</code>, <code>seq</code></td>
+<td>file bytes, 1–65 536 B</td>
+<td>Relays it, sets <code>TRANSFERRING</code></td>
+</tr>
+<tr>
+<td><code>FILE_END</code></td>
+<td>sender</td>
+<td><code>transfer_id</code>, <code>total_chunks</code>, <code>total_bytes</code></td>
+<td>none</td>
+<td>Relays it, sets <code>VERIFYING</code></td>
+</tr>
+<tr>
+<td><code>FILE_RESULT</code></td>
+<td>recipient</td>
+<td><code>transfer_id</code>, <code>ok</code>, <code>received_bytes</code>; opt. <code>sha256</code>, opt. <code>error_code</code></td>
+<td>none</td>
+<td>Relays it, sets <code>COMPLETED</code> or <code>FAILED</code></td>
+</tr>
+<tr>
+<td><code>FILE_CANCEL</code></td>
+<td>either</td>
+<td><code>transfer_id</code>; opt. <code>reason</code> (must be an error code)</td>
+<td>none</td>
+<td>Relays it, sets <code>CANCELLED</code></td>
+</tr>
+</tbody></table>
+<p>The decoder rejects a <code>filename</code> that is not 1–255 characters and at most 255 UTF-8 bytes, is <code>.</code> or <code>..</code>, or contains <code>/</code> or <code>\</code>, with <code>UNSAFE_FILENAME</code>, and any size above 100 MiB with <code>FILE_TOO_LARGE</code>. <code>chunk_size</code> must be 1–65 536, and <code>FILE_RESULT</code> carries <code>error_code</code> exactly when <code>ok</code> is <code>false</code>.</p>
+<p>The server does not check <code>seq</code>, sizes or hashes; the receiving client does. <code>seq</code> must be the next chunk number (<code>SEQ_MISMATCH</code>). Every chunk but the last must be <code>chunk_size</code> bytes, and the totals in <code>FILE_END</code> must match (<code>SIZE_MISMATCH</code>). The SHA-256 of the received bytes must match the offer (<code>HASH_MISMATCH</code>). The receiver always puts that hash in <code>FILE_RESULT</code>, and the sender accepts <code>ok: true</code> only if <code>received_bytes</code> and the hash match its own file.</p>
+<h3>2.4.4 Discovery</h3>
+<p>Table 6. Discovery messages (UDP only; the datagram format is in 2.8).</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Direction</th>
+<th>Header fields (besides common)</th>
+<th>Payload</th>
+<th>Reply</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>DISCOVER</code></td>
+<td>client → broadcast</td>
+<td>none</td>
+<td>none</td>
+<td><code>SERVER_INFO</code></td>
+</tr>
+<tr>
+<td><code>SERVER_INFO</code></td>
+<td>server → client (unicast)</td>
+<td><code>ref_request_id</code>, <code>server_name</code> (≤64), <code>port</code> (1–65535), <code>tls</code> (bool); opt. <code>host</code> (≤255)</td>
+<td>none</td>
+<td>none</td>
+</tr>
+</tbody></table>
+<p>The server never sets <code>host</code>; the client takes the server&#39;s IP from the datagram&#39;s source address. Either type sent over TCP gives <code>INVALID_FIELD</code>.</p>
+<h3>2.4.5 Error</h3>
+<p>Table 7. The error message.</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Direction</th>
+<th>Header fields (besides common)</th>
+<th>Payload</th>
+<th>Reply</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ERROR</code></td>
+<td>S→C only</td>
+<td><code>code</code> (an error code, Table 9), <code>message</code> (≤256); opt. <code>ref_request_id</code>, opt. <code>field</code> (≤64), opt. <code>transfer_id</code></td>
+<td>none</td>
+<td>none</td>
+</tr>
+</tbody></table>
+<p><code>message</code> is user-facing text (Vietnamese, except one English text in the HELLO phase). <code>ref_request_id</code> is present when the error answers a request. It is absent from the HELLO-phase error and from transfer notices (<code>TIMEOUT</code>, <code>CONNECTION_LOST</code>), including the one the recipient gets when its <code>FILE_REJECT</code> cannot be forwarded. The server never sets <code>field</code>.</p>
+<h2>2.5 Error codes</h2>
+<p>There are 35 error codes. A code reaches the peer in an <code>ERROR</code>, as the <code>error_code</code> of a <code>FILE_RESULT</code>, or as the <code>reason</code> of a <code>FILE_CANCEL</code>. Decoder errors close the connection without a reply (2.6.2), and some codes are local only. Table 9 in Appendix A lists every code and when it is used.</p>
+<h2>2.6 Limits and validation</h2>
+<h3>2.6.1 Key limits</h3>
+<p>The largest frame is 81 924 B (4 + 16 384 + 65 536). A file chunk carries at most 64 KiB (65 536 B), a chat message at most 8 KiB (8 192 B), and a file may be at most 100 MiB. An idle connection is closed after 45 s with the server&#39;s built-in default, or 120 s when the server is started from the command line. A new connection has 5 s for the TLS handshake and then a fresh 5 s to send <code>HELLO</code>. Table 10 in Appendix B lists all limits and timeouts.</p>
+<h3>2.6.2 Malformed frame vs. bad request</h3>
+<p><strong>Malformed frame: the connection is closed.</strong> Any decoder error (framing, JSON, schema, direction or a spoofed field) poisons the stream (2.2.2), so the server closes the socket without a reply. The only exception is a well-formed frame other than <code>HELLO</code> during the HELLO phase: it gets <code>ERROR INVALID_FIELD</code> without <code>ref_request_id</code>, and then the connection closes. A handshake timeout closes silently.</p>
+<p><strong>Valid frame, bad request: an <code>ERROR</code> reply.</strong> A well-formed message that fails a routing, state or login check gets one <code>ERROR</code> with the code, <code>ref_request_id</code> and, if present, <code>transfer_id</code>. The connection stays open, except after the third <code>AUTH_FAILED</code> and after an unhandled type (<code>HELLO</code> after the handshake, <code>PING</code>, <code>PONG</code>). Table 9 gives the codes. Invalid UDP datagrams are ignored silently.</p>
+<h3>2.6.3 Server-stamped fields</h3>
+<p><code>sender</code>, <code>message_id</code> and <code>timestamp_ms</code> are set only by the server. If a client header contains any of them, the frame fails with <code>SPOOFED_FIELD</code> and the connection closes. The server stamps <code>sender</code> (the username logged in on the sending connection) on every forwarded chat message and <code>FILE_OFFER</code>, and a fresh <code>message_id</code> and <code>timestamp_ms</code> on chat messages. A client therefore cannot claim to be another user.</p>
+<h2>2.7 State diagrams</h2>
+<h3>2.7.1 Server-side connection</h3>
+<p>The server keeps one record per accepted socket; Figure 3 shows its states.</p>
+<ul>
+<li><strong><code>CONNECTING</code></strong>: created after <code>accept()</code> if fewer than the maximum number of clients (64 by default) are connected; TLS handshake, then <code>HELLO</code>, 5 s each.</li>
+<li><strong><code>HELLO_ACCEPTED</code></strong>: <code>HELLO_ACK</code> sent; the server waits for <code>AUTH</code>.</li>
+<li><strong><code>AUTHENTICATED</code></strong>: user registered, then <code>AUTH_OK</code> sent; other users&#39; messages are forwarded only after that <code>AUTH_OK</code> (waiting up to 1 s).</li>
+<li><strong><code>CLOSING</code></strong>: server shutdown, or a failed write to this peer (a partial frame may be on the wire); nothing more is sent, and the worker notices within 0.5 s.</li>
+<li><strong><code>CLOSED</code></strong>: every exit path; the user is removed and its transfers fail with <code>CONNECTION_LOST</code>.</li>
+</ul>
+<p>End of stream, an idle timeout, a malformed frame, the third failed login, an unhandled type and <code>LOGOUT</code> after login go straight to <code>CLOSED</code>. Before login, <code>LOGOUT</code> gets <code>ERROR NOT_AUTHENTICATED</code> and the state does not change.</p>
+<p><img src="../diagrams/state-connection.svg" alt="Figure 3. Server-side connection states (ConnectionState). &quot;Fatal error&quot; means a malformed frame, an idle timeout, or an unhandled type after its ERROR reply."></p>
+<h3>2.7.2 File transfer</h3>
+<p>A transfer has eight statuses, four of them final (<code>COMPLETED</code>, <code>REJECTED</code>, <code>FAILED</code>, <code>CANCELLED</code>). The sender, the server and the recipient each track it. Figure 4 shows the allowed transitions; every non-final state may also move to <code>CANCELLED</code> or <code>FAILED</code>.</p>
+<ul>
+<li><strong><code>OFFERED</code></strong>: the offer is made (sender, server); the recipient&#39;s record starts here when its user accepts.</li>
+<li><strong><code>ACCEPTED</code></strong>: the recipient has opened its <code>.part</code> file and sends <code>FILE_ACCEPT</code>.</li>
+<li><strong><code>TRANSFERRING</code></strong>: chunks are flowing (from the first <code>FILE_CHUNK</code>).</li>
+<li><strong><code>VERIFYING</code></strong>: the last chunk is sent and <code>FILE_END</code> follows.</li>
+<li><strong><code>COMPLETED</code></strong>: counts and SHA-256 match and the <code>.part</code> file is renamed; <code>FILE_RESULT</code> with <code>ok: true</code>.</li>
+<li><strong><code>REJECTED</code></strong> / <strong><code>CANCELLED</code></strong>: after <code>FILE_REJECT</code> / <code>FILE_CANCEL</code>.</li>
+<li><strong><code>FAILED</code></strong>: <code>ERROR TIMEOUT</code> or <code>CONNECTION_LOST</code>, <code>FILE_RESULT</code> with <code>ok: false</code>, or a local error.</li>
+</ul>
+<p>The server also checks roles. Only the recipient may send <code>FILE_ACCEPT</code> or <code>FILE_REJECT</code> (in <code>OFFERED</code>) and <code>FILE_RESULT</code> (after <code>OFFERED</code>; <code>ok: true</code> only in <code>VERIFYING</code>). Only the sender may send <code>FILE_CHUNK</code> or <code>FILE_END</code> (in <code>ACCEPTED</code> or <code>TRANSFERRING</code>). Either party may send <code>FILE_CANCEL</code> before a final state. Anything else gets <code>ERROR TRANSFER_STATE</code>, and a finished session is removed at once.</p>
+<p>Unlike the two clients, the server does not check transitions on its relay path. Its record therefore also moves <code>TRANSFERRING</code> → <code>TRANSFERRING</code> on each further chunk, and <code>ACCEPTED</code> → <code>VERIFYING</code> for an empty file (marked in Figure 4).</p>
+<p><img src="../diagrams/state-transfer.svg" alt="Figure 4. File-transfer states (TransferStatus). The note marks the two moves that only the server&#39;s relay path makes."></p>
+<h2>2.8 UDP discovery</h2>
+<p>A client finds a server on the LAN by UDP broadcast. Each datagram holds exactly one frame in the format of Figure 2, with no payload and no trailing bytes, and is at most 1 024 B long; an invalid datagram is ignored.</p>
+<p>The server binds its UDP socket to the same address and port as its TCP listener (default port 5000; with the default host <code>127.0.0.1</code> this is loopback). If the bind fails, the server runs without discovery. The client broadcasts one <code>DISCOVER</code> to <code>255.255.255.255</code> on that port and collects replies for 2 s. The server answers with a unicast <code>SERVER_INFO</code> to the source address and port of the request, carrying <code>ref_request_id</code>, <code>server_name</code>, the TCP <code>port</code> and the <code>tls</code> flag.</p>
+<p>The client keeps the replies that match its <code>request_id</code>, takes each server&#39;s IP from the source address, prints the list and exits. The user then connects with that host and port; TLS is chosen from the client&#39;s own options, not from <code>tls</code>. Discovery is plaintext and finds servers, not users (see 1.6); a client learns who is online through <code>USER_LIST</code> (Table 3).</p>
+

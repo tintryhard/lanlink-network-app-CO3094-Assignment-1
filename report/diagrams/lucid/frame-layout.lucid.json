@@ -1,0 +1,231 @@
+{
+ "version": 1,
+ "pages": [
+  {
+   "id": "p1",
+   "title": "Frame layout",
+   "shapes": [
+    {
+     "id": "o0",
+     "type": "text",
+     "boundingBox": {
+      "x": -40,
+      "y": 20,
+      "w": 160,
+      "h": 40
+     },
+     "text": "<p style=\"font-size:18px;text-align:center\">offset 0</p>"
+    },
+    {
+     "id": "o1",
+     "type": "text",
+     "boundingBox": {
+      "x": 160,
+      "y": 20,
+      "w": 160,
+      "h": 40
+     },
+     "text": "<p style=\"font-size:18px;text-align:center\">4</p>"
+    },
+    {
+     "id": "o2",
+     "type": "text",
+     "boundingBox": {
+      "x": 600,
+      "y": 20,
+      "w": 160,
+      "h": 40
+     },
+     "text": "<p style=\"font-size:18px;text-align:center\">4 + N</p>"
+    },
+    {
+     "id": "o3",
+     "type": "text",
+     "boundingBox": {
+      "x": 1040,
+      "y": 20,
+      "w": 160,
+      "h": 40
+     },
+     "text": "<p style=\"font-size:18px;text-align:center\">4 + N + P</p>"
+    },
+    {
+     "id": "prefix",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 40,
+      "y": 80,
+      "w": 200,
+      "h": 150
+     },
+     "text": "<p style=\"font-size:17px;text-align:center\"><span style=\"font-size:22px\"><b>N</b></span><br>length prefix<br>uint32, big-endian</p>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#C9DCF3"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "header",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 240,
+      "y": 80,
+      "w": 440,
+      "h": 150
+     },
+     "text": "<p style=\"font-size:17px;text-align:center\"><span style=\"font-size:22px\"><b>JSON header</b></span><br>N bytes, UTF-8, one JSON object<br>its payload_length field gives P</p>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#EAF1FB"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "payload",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 680,
+      "y": 80,
+      "w": 440,
+      "h": 150
+     },
+     "text": "<p style=\"font-size:17px;text-align:center\"><span style=\"font-size:22px\"><b>payload</b></span><br>P = payload_length bytes<br>UTF-8 text, JSON or raw file bytes,<br>depending on the message type</p>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#F5F5F5"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "d0",
+     "type": "text",
+     "boundingBox": {
+      "x": 40,
+      "y": 268,
+      "w": 200,
+      "h": 40
+     },
+     "text": "<p style=\"font-size:18px;text-align:center\">4 bytes</p>"
+    },
+    {
+     "id": "d1",
+     "type": "text",
+     "boundingBox": {
+      "x": 240,
+      "y": 268,
+      "w": 440,
+      "h": 40
+     },
+     "text": "<p style=\"font-size:18px;text-align:center\">1 ≤ N ≤ 16 384</p>"
+    },
+    {
+     "id": "d2",
+     "type": "text",
+     "boundingBox": {
+      "x": 680,
+      "y": 268,
+      "w": 440,
+      "h": 40
+     },
+     "text": "<p style=\"font-size:18px;text-align:center\">0 ≤ P ≤ payload ceiling of the type</p>"
+    }
+   ],
+   "lines": [
+    {
+     "id": "l0",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "positionEndpoint",
+      "style": "arrow",
+      "position": {
+       "x": 46,
+       "y": 254
+      }
+     },
+     "endpoint2": {
+      "type": "positionEndpoint",
+      "style": "arrow",
+      "position": {
+       "x": 234,
+       "y": 254
+      }
+     },
+     "stroke": {
+      "color": "#555555",
+      "width": 1,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "l1",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "positionEndpoint",
+      "style": "arrow",
+      "position": {
+       "x": 246,
+       "y": 254
+      }
+     },
+     "endpoint2": {
+      "type": "positionEndpoint",
+      "style": "arrow",
+      "position": {
+       "x": 674,
+       "y": 254
+      }
+     },
+     "stroke": {
+      "color": "#555555",
+      "width": 1,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "l2",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "positionEndpoint",
+      "style": "arrow",
+      "position": {
+       "x": 686,
+       "y": 254
+      }
+     },
+     "endpoint2": {
+      "type": "positionEndpoint",
+      "style": "arrow",
+      "position": {
+       "x": 1114,
+       "y": 254
+      }
+     },
+     "stroke": {
+      "color": "#555555",
+      "width": 1,
+      "style": "solid"
+     }
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,67 @@
+@startuml
+participant "Alice\nlanlink-client-reader" as AR
+participant "Alice\nlanlink-file-sender" as AS
+participant "Server worker\nlanlink-‹id› (Alice)" as SA
+participant "Server worker\nlanlink-‹id› (Bob)" as SB
+participant "Bob\nlanlink-client-reader" as BR
+
+note over AR, BR : Start: transfer ACCEPTED, chunks flowing (see Figure 7)
+
+alt Alice disconnects in the middle of the transfer
+  AS -[#C0392B]-> SA : TCP connection closes
+  note over SA
+  receive() returns None
+  (EOF) or raises OSError
+  end note
+  note over SA
+  _serve_client finally:
+  remove alice from _users,
+  state CLOSED
+  end note
+  note over SA
+  _fail_transfers_of
+  (CONNECTION_LOST) →
+  _fail_transfer_and_notify:
+  FAILED, session deleted
+  end note
+  SA ->> BR : ERROR CONNECTION_LOST (transfer_id)
+  note over BR
+  Receiver.handle_message
+  → _fail_and_cleanup:
+  .part deleted, FAILED
+  end note
+else hash mismatch at the end
+  AS ->> SA : FILE_END
+  SA ->> BR : FILE_END (total_chunks,\ntotal_bytes)
+  note over BR
+  Receiver.finish:
+  SHA-256 ≠ offer.sha256
+  → HASH_MISMATCH,
+  .part deleted, FAILED
+  end note
+  BR ->> SB : FILE_RESULT (ok = false,\nerror_code = HASH_MISMATCH)
+  note over SA, SB
+  FAILED,
+  session deleted
+  end note
+  SB ->> AR : FILE_RESULT
+  note over AR
+  SendSession FAILED
+  (HASH_MISMATCH)
+  end note
+else no relayed message for transfer_timeout (60 s)
+  note over SA, SB
+  _receive_until_deadline (wakes ≤ 0.5 s)
+  → _fail_transfers_of(TIMEOUT, expired_only),
+  run by whichever worker wakes first
+  end note
+  SA ->> AR : ERROR TIMEOUT (transfer_id)
+  SA ->> BR : ERROR TIMEOUT (transfer_id)
+  note over BR : .part deleted, FAILED
+  note over AR : SendSession FAILED
+end
+note over AR, BR
+Each client's reader also puts the ERROR or final snapshot on its
+commands queue, so the main thread prints the outcome.
+end note
+@enduml

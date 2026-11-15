@@ -1,0 +1,57 @@
+@startuml
+participant "Alice main thread\n(login_cli)" as AM
+participant "Alice reader\nlanlink-client-reader" as AR
+participant "Server worker\nlanlink-‹id› (Alice)" as SW
+participant "Server main thread\n(serve_forever)" as SA
+
+AM ->> SA : TCP connect (open_connection)
+alt fewer than max_clients (64)
+  SA ->> SW : start _serve_client
+else server full
+  SA -[#C0392B]-> AM : accept(), then close()
+end
+note over AM, SW
+TLS only (client --cafile, server --cert): handshake in open_connection
+and in the worker (tls.wrap_socket), never in the accept loop.
+TLS handshake, then HELLO, each get handshake_timeout (server --timeout, 5 s)
+end note
+
+alt TLS handshake and HELLO each within handshake_timeout
+  AM ->> SW : HELLO (client_name, client_version)
+  SW ->> AM : HELLO_ACK (ref_request_id, server_name, limits)
+  note over SW
+  after accept_hello: HELLO_ACCEPTED,
+  timeout becomes idle_timeout
+  end note
+else TLS handshake or HELLO too slow
+  SW -[#C0392B]-> AM : socket closed, no ERROR sent
+  note over AM, AR
+  EOFError or socket error: CLI prints "Client failed"
+  end note
+end
+
+note over AM : getpass("Password: ")
+AM ->> SW : AUTH (username, payload = password)
+alt CredentialStore.verify OK (PBKDF2) and username not online
+  note over SW
+  _users[username] = UserSession(ip, port)
+  AUTHENTICATED
+  end note
+  SW ->> AM : AUTH_OK (ref_request_id, username)
+  note over SW : auth_ready.set()
+else wrong password ∕ unknown user, or already online
+  SW ->> AM : ERROR AUTH_FAILED or ALREADY_LOGGED_IN
+  note over AM, AR
+  authenticate raises LanLinkError, the CLI exits
+  (server closes after the 3rd AUTH_FAILED)
+  end note
+end
+
+AM ->> AR : PrivateChatClient(...)\nstarts reader
+AM ->> SW : USER_LIST (empty), queue in _pending[request_id]
+SW ->> AR : USER_LIST (ref_request_id,\npayload = users JSON)
+AR ->> AM : reply put in queue\n_pending[ref_request_id]
+note over AM, AR
+print user list, start lanlink-cli-input, "> " prompt
+end note
+@enduml

@@ -1,0 +1,111 @@
+<h1>3 Sequence Diagrams</h1>
+<p>This section follows a chat message and a file transfer through the system. In Figures 5
+to 9 one lifeline is one thread, not one host: the server has a main thread that accepts
+connections and one worker thread per client, and each client has a main thread, a keyboard
+thread, a reader thread and, while it sends a file, a file-sender thread (Table 11,
+Appendix C). The server has no central router thread. The worker of the connection that
+<em>sent</em> a message writes the forwarded copy straight into the recipient&#39;s socket; a write
+lock per socket keeps this frame from interleaving with the recipient worker&#39;s own replies.
+Error codes are listed in Table 9 (Appendix A), limits and timeouts in Table 10
+(Appendix B), and the connection and transfer states in Figures 3 and 4.</p>
+<h2>3.1 Login and user list</h2>
+<p>Figure 5 shows how a client connects, logs in and fetches the first user list.</p>
+<ol>
+<li>The server&#39;s main thread accepts the TCP connection and starts a worker for it, or
+closes it at once if 64 connections are already open.</li>
+<li>With TLS on, the handshake runs in the worker, so a slow client never blocks the accept loop.</li>
+<li>The client sends <code>HELLO</code>, the worker answers <code>HELLO_ACK</code>, and the connection becomes
+<code>HELLO_ACCEPTED</code>.</li>
+<li>The client sends <code>AUTH</code> with the username in the header and the password in the payload.</li>
+<li>The worker checks the PBKDF2 hash, registers the session, enters <code>AUTHENTICATED</code> and
+replies <code>AUTH_OK</code>; only then may other workers forward messages to this client.</li>
+<li>The client starts its reader thread and asks for <code>USER_LIST</code>, which lists every online
+user with IP address and port.</li>
+</ol>
+<p>The TLS handshake and <code>HELLO</code> each get 5 s; on expiry the server closes the socket without an
+<code>ERROR</code>. A bad password gets an <code>ERROR</code> with <code>AUTH_FAILED</code>, and a name already online gets
+<code>ALREADY_LOGGED_IN</code>. The CLI then exits; the server itself closes a connection after
+three failed logins.</p>
+<p><img src="../diagrams/seq-login.svg" alt="Figure 5. Login: TCP and TLS connect, HELLO, AUTH and the first USER_LIST."></p>
+<h2>3.2 Chat message lifecycle</h2>
+<p>Figure 6 follows one private message from Alice to Bob.</p>
+<ol>
+<li>Alice types <code>/msg bob hi</code>; her client sends <code>CHAT_PRIVATE</code> with a fresh <code>request_id</code>
+and <code>recipient = bob</code>, and waits for the reply.</li>
+<li>Alice&#39;s server worker finds Bob among the logged-in users and waits up to 1 s until his
+own <code>AUTH_OK</code> has been sent.</li>
+<li>The worker stamps the fields a client may not set: <code>sender</code>, a new <code>message_id</code> and the
+server&#39;s <code>timestamp_ms</code>. A client frame that contains them fails with
+<code>SPOOFED_FIELD</code> and the connection is closed (2.6.3).</li>
+<li>The worker writes the stamped message directly into Bob&#39;s socket, and Bob&#39;s reader thread
+prints it; Bob&#39;s server worker is not involved.</li>
+<li>Only after that write succeeds does the worker send <code>CHAT_ACK</code> to Alice, carrying her
+request ID in <code>ref_request_id</code> and the server&#39;s message ID and timestamp.</li>
+</ol>
+<p><code>CHAT_ACK</code> means &quot;written to Bob&#39;s connection&quot;, not &quot;read by Bob&quot;. If Bob has no session,
+Alice gets <code>ERROR RECIPIENT_OFFLINE</code>. If the write to Bob fails, his stream may hold a partial
+frame, so the server shuts his socket down (his worker exits within 0.5 s) and answers Alice
+with <code>ERROR CONNECTION_LOST</code>, as it also does when Bob&#39;s <code>AUTH_OK</code> is not out within 1 s.</p>
+<p><img src="../diagrams/seq-chat.svg" alt="Figure 6. Lifecycle of a private chat message, with the offline and failed-write alternatives."></p>
+<p>A public message (<code>/all hi</code>, type <code>CHAT_PUBLIC</code>, no recipient field) is handled differently,
+as the note at the bottom of Figure 6 shows. Alice&#39;s worker delivers it to each other online
+user one by one, closing and skipping any recipient whose write fails. It then always sends
+<code>CHAT_ACK</code>, even with no recipients, so this ack only means &quot;accepted&quot; (best effort).</p>
+<h2>3.3 File transfer: happy path</h2>
+<p>Figure 7 shows a successful transfer: negotiation, chunk stream, verification.</p>
+<ol>
+<li>Alice types <code>/offer bob a.pdf</code>; her client reads the file once for its size and SHA-256
+and sends <code>FILE_OFFER</code> with these values, the file name and the chunk size.</li>
+<li>Alice&#39;s worker creates a transfer session in state <code>OFFERED</code> and forwards the offer to
+Bob with <code>sender</code> added.</li>
+<li>Bob types <code>/accept &lt;id&gt;</code>; his client creates a private temporary <code>.part</code> file and only
+then sends <code>FILE_ACCEPT</code>.</li>
+<li>Bob&#39;s worker moves the session to <code>ACCEPTED</code> and forwards the accept to Alice, whose
+reader thread starts a file-sender thread so that the reader stays free.</li>
+<li>The sender thread sends <code>FILE_CHUNK</code> messages of up to 64 KiB with <code>seq</code> = 0 … n−1 and
+the raw bytes as payload, then <code>FILE_END</code> with the chunk and byte totals.</li>
+<li>Alice&#39;s worker relays each message to Bob without reading the data, moving the session
+to <code>TRANSFERRING</code> and then <code>VERIFYING</code>.</li>
+<li>Bob&#39;s reader checks each chunk&#39;s <code>seq</code> and size, appends it to the <code>.part</code> file and
+updates a running SHA-256.</li>
+<li>On <code>FILE_END</code>, Bob&#39;s client checks the counts and the digest against the offer, flushes
+the file to disk and renames it to its final name in one atomic step.</li>
+<li>Bob sends <code>FILE_RESULT</code> with <code>ok = true</code>; his worker marks the session <code>COMPLETED</code> and
+forwards it, and Alice&#39;s client checks size and hash once more.</li>
+</ol>
+<p>There is no per-chunk acknowledgement. TCP already delivers the bytes in order, and its flow
+control paces the sender: if Bob reads slowly, the write to his socket blocks Alice&#39;s worker,
+which stops reading from Alice, whose sender thread then blocks on its own write. Thanks to
+the <code>.part</code> file and the final rename, an incomplete or corrupt download never appears under
+the real name.</p>
+<p><img src="../diagrams/seq-file.svg" alt="Figure 7. File transfer, happy path: offer, accept, chunk loop, FILE_END, verification and FILE_RESULT."></p>
+<h2>3.4 File transfer: failure paths</h2>
+<p>Figure 8 shows the two deliberate stops.</p>
+<ul>
+<li><strong>Reject.</strong> Bob&#39;s <code>FILE_REJECT</code> is forwarded to Alice, the session ends <code>REJECTED</code>, and no
+file is opened and no sender thread started.</li>
+<li><strong>Cancel.</strong> The CLI has no cancel command: <code>FILE_CANCEL</code> is sent only when reading the
+source fails mid-transfer (e.g. <code>SOURCE_CHANGED</code>), and Bob&#39;s client then deletes its
+<code>.part</code> file and ends <code>CANCELLED</code>.</li>
+</ul>
+<p><img src="../diagrams/seq-file-failures.svg" alt="Figure 8. File transfer failures (1): the recipient rejects the offer, or the sender cancels during the chunk loop."></p>
+<p>Figure 9 shows the failures nobody chose. In each case the transfer ends <code>FAILED</code> and the
+receiver deletes its <code>.part</code> file.</p>
+<ul>
+<li><strong>Disconnect.</strong> When either party&#39;s connection drops, the server sends the other one an
+<code>ERROR</code> with <code>CONNECTION_LOST</code> and the transfer ID.</li>
+<li><strong>Hash mismatch.</strong> If Bob&#39;s digest differs from the offer, he sends <code>FILE_RESULT</code> with
+<code>ok = false</code> and <code>HASH_MISMATCH</code>; a wrong <code>seq</code> or chunk size fails the same way at once.</li>
+<li><strong>Timeout.</strong> If no message is relayed for 60 s, the first worker to notice (each wakes at
+least every 0.5 s) sends <code>ERROR TIMEOUT</code> to both clients.</li>
+</ul>
+<p><img src="../diagrams/seq-file-failures-2.svg" alt="Figure 9. File transfer failures (2): sender disconnect, hash mismatch and transfer timeout."></p>
+<h2>3.5 Matching replies to requests</h2>
+<p>Every request carries a fresh <code>request_id</code>, and its direct reply, including an <code>ERROR</code> it
+causes, repeats that value in <code>ref_request_id</code>. After login the client keeps one waiting
+slot per request and the reader thread fills the slot that matches each reply, so
+concurrent requests never get each other&#39;s answers. An unmatched reply, or no reply within
+5 s, closes the connection, and at most 64 requests can wait at once. Chat, file messages
+and errors that name a transfer are not replies and go straight to the screen or the
+transfer code.</p>
+

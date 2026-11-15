@@ -1,0 +1,756 @@
+{
+ "version": 1,
+ "pages": [
+  {
+   "id": "p1",
+   "title": "File Transfer States",
+   "shapes": [
+    {
+     "id": "active",
+     "type": "roundedRectangleContainer",
+     "boundingBox": {
+      "x": 450,
+      "y": 110,
+      "w": 360,
+      "h": 690
+     },
+     "containerTitle": {
+      "text": "Active"
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#F6F8FB"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "dashed"
+      }
+     }
+    },
+    {
+     "id": "start",
+     "type": "circle",
+     "boundingBox": {
+      "x": 618,
+      "y": 20,
+      "w": 24,
+      "h": 24
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#222222"
+      },
+      "stroke": {
+       "color": "#222222",
+       "width": 1,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "offered",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 530,
+      "y": 190,
+      "w": 200,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>OFFERED</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#EAF1FB"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "accepted",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 530,
+      "y": 340,
+      "w": 200,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>ACCEPTED</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#EAF1FB"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "transferring",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 530,
+      "y": 490,
+      "w": 200,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>TRANSFERRING</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#EAF1FB"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "verifying",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 530,
+      "y": 640,
+      "w": 200,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>VERIFYING</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#EAF1FB"
+      },
+      "stroke": {
+       "color": "#2F4B7C",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "rejected",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 70,
+      "y": 190,
+      "w": 180,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>REJECTED</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#E6E6E6"
+      },
+      "stroke": {
+       "color": "#444444",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "cancelled",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 70,
+      "y": 450,
+      "w": 180,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>CANCELLED</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#E6E6E6"
+      },
+      "stroke": {
+       "color": "#444444",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "failed",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 70,
+      "y": 650,
+      "w": 180,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>FAILED</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#E6E6E6"
+      },
+      "stroke": {
+       "color": "#444444",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "completed",
+     "type": "rectangle",
+     "boundingBox": {
+      "x": 530,
+      "y": 880,
+      "w": 200,
+      "h": 64
+     },
+     "text": "<span style=\"font-size:20px\"><b>COMPLETED</b></span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#E3F1E3"
+      },
+      "stroke": {
+       "color": "#2E6B2E",
+       "width": 2,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    },
+    {
+     "id": "e1",
+     "type": "circle",
+     "boundingBox": {
+      "x": 14,
+      "y": 210,
+      "w": 24,
+      "h": 24
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#222222"
+      },
+      "stroke": {
+       "color": "#222222",
+       "width": 1,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "e2",
+     "type": "circle",
+     "boundingBox": {
+      "x": 14,
+      "y": 470,
+      "w": 24,
+      "h": 24
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#222222"
+      },
+      "stroke": {
+       "color": "#222222",
+       "width": 1,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "e3",
+     "type": "circle",
+     "boundingBox": {
+      "x": 14,
+      "y": 670,
+      "w": 24,
+      "h": 24
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#222222"
+      },
+      "stroke": {
+       "color": "#222222",
+       "width": 1,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "e4",
+     "type": "circle",
+     "boundingBox": {
+      "x": 790,
+      "y": 900,
+      "w": 24,
+      "h": 24
+     },
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#222222"
+      },
+      "stroke": {
+       "color": "#222222",
+       "width": 1,
+       "style": "solid"
+      }
+     }
+    },
+    {
+     "id": "note",
+     "type": "note",
+     "boundingBox": {
+      "x": 870,
+      "y": 325,
+      "w": 290,
+      "h": 190
+     },
+     "text": "<span style=\"font-size:17px\">Server relay only (no check_transition):<br>ACCEPTED to VERIFYING on FILE_END for an empty file, and<br>TRANSFERRING to TRANSFERRING on every FILE_CHUNK.</span>",
+     "style": {
+      "fill": {
+       "type": "color",
+       "color": "#FFF8DC"
+      },
+      "stroke": {
+       "color": "#7A5B00",
+       "width": 1,
+       "style": "solid"
+      },
+      "textColor": "#1A1A1A"
+     }
+    }
+   ],
+   "lines": [
+    {
+     "id": "t0",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "start",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "offered",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">FILE_OFFER</span>",
+       "position": 0.25,
+       "side": "middle"
+      }
+     ]
+    },
+    {
+     "id": "t1",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "offered",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "accepted",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">FILE_ACCEPT</span>",
+       "position": 0.5,
+       "side": "middle"
+      }
+     ]
+    },
+    {
+     "id": "t2",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "accepted",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "transferring",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">first FILE_CHUNK</span>",
+       "position": 0.5,
+       "side": "middle"
+      }
+     ]
+    },
+    {
+     "id": "t3",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "transferring",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "verifying",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">FILE_END</span>",
+       "position": 0.5,
+       "side": "middle"
+      }
+     ]
+    },
+    {
+     "id": "t4",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "offered",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "rejected",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">FILE_REJECT</span>",
+       "position": 0.7,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "t5",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "verifying",
+      "position": {
+       "x": 0.5,
+       "y": 1
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "completed",
+      "position": {
+       "x": 0.5,
+       "y": 0
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">FILE_RESULT ok=true</span>",
+       "position": 0.72,
+       "side": "middle"
+      }
+     ]
+    },
+    {
+     "id": "t6",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "active",
+      "position": {
+       "x": 0,
+       "y": 0.539
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "cancelled",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">FILE_CANCEL</span>",
+       "position": 0.5,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "t7",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "active",
+      "position": {
+       "x": 0,
+       "y": 0.829
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "failed",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:17px\">ERROR,<br>FILE_RESULT ok=false,<br>timeout, disconnect</span>",
+       "position": 0.5,
+       "side": "top"
+      }
+     ]
+    },
+    {
+     "id": "t8",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "rejected",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "e1",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "t9",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "cancelled",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "e2",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "t10",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "failed",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "e3",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "t11",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "completed",
+      "position": {
+       "x": 1,
+       "y": 0.5
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "arrow",
+      "shapeId": "e4",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#333333",
+      "width": 2,
+      "style": "solid"
+     }
+    },
+    {
+     "id": "t12",
+     "lineType": "straight",
+     "endpoint1": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "active",
+      "position": {
+       "x": 1,
+       "y": 0.45
+      }
+     },
+     "endpoint2": {
+      "type": "shapeEndpoint",
+      "style": "none",
+      "shapeId": "note",
+      "position": {
+       "x": 0,
+       "y": 0.5
+      }
+     },
+     "stroke": {
+      "color": "#7A5B00",
+      "width": 1,
+      "style": "dashed"
+     }
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,54 @@
+---
+config:
+  sequence:
+    mirrorActors: false
+    actorMargin: 40
+    width: 160
+    height: 50
+    messageMargin: 26
+    boxMargin: 8
+    noteMargin: 8
+    messageFontSize: 15
+    noteFontSize: 14
+    actorFontSize: 15
+    wrap: false
+---
+sequenceDiagram
+    participant AM as Alice main thread<br/>(login_cli)
+    participant AR as Alice reader<br/>lanlink-client-reader
+    participant SW as Server worker<br/>lanlink-‹id› (Alice)
+    participant SA as Server main thread<br/>(serve_forever)
+
+    AM->>SA: TCP connect (open_connection)
+    alt fewer than max_clients (64)
+        SA->>SW: start _serve_client
+    else server full
+        SA--xAM: accept(), then close()
+    end
+    Note over AM,SW: TLS only (client --cafile, server --cert): handshake in open_connection<br/>and in the worker (tls.wrap_socket), never in the accept loop.<br/>TLS handshake, then HELLO, each get handshake_timeout (server --timeout, 5 s)
+
+    alt TLS handshake and HELLO each within handshake_timeout
+        AM->>SW: HELLO (client_name, client_version)
+        SW->>AM: HELLO_ACK (ref_request_id, server_name, limits)
+        Note over SW: after accept_hello: HELLO_ACCEPTED,<br/>timeout becomes idle_timeout
+    else TLS handshake or HELLO too slow
+        SW--xAM: socket closed, no ERROR sent
+        Note over AM,AR: EOFError or socket error: CLI prints "Client failed"
+    end
+
+    Note over AM: getpass("Password: ")
+    AM->>SW: AUTH (username, payload = password)
+    alt CredentialStore.verify OK (PBKDF2) and username not online
+        Note over SW: _users[username] = UserSession(ip, port)<br/>AUTHENTICATED
+        SW->>AM: AUTH_OK (ref_request_id, username)
+        Note over SW: auth_ready.set()
+    else wrong password / unknown user, or already online
+        SW->>AM: ERROR AUTH_FAILED or ALREADY_LOGGED_IN
+        Note over AM,AR: authenticate raises LanLinkError, the CLI exits<br/>(server closes after the 3rd AUTH_FAILED)
+    end
+
+    AM->>AR: PrivateChatClient(...)<br/>starts reader
+    AM->>SW: USER_LIST (empty), queue in _pending[request_id]
+    SW->>AR: USER_LIST (ref_request_id,<br/>payload = users JSON)
+    AR->>AM: reply put in queue<br/>_pending[ref_request_id]
+    Note over AM,AR: print user list, start lanlink-cli-input, "> " prompt

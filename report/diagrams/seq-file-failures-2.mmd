@@ -1,0 +1,47 @@
+---
+config:
+  sequence:
+    mirrorActors: false
+    actorMargin: 25
+    width: 150
+    height: 50
+    messageMargin: 22
+    boxMargin: 8
+    noteMargin: 8
+    messageFontSize: 16
+    noteFontSize: 15
+    actorFontSize: 14
+    wrap: false
+---
+sequenceDiagram
+    participant AR as Alice<br/>lanlink-client-reader
+    participant AS as Alice<br/>lanlink-file-sender
+    participant SA as Server worker<br/>lanlink-‹id› (Alice)
+    participant SB as Server worker<br/>lanlink-‹id› (Bob)
+    participant BR as Bob<br/>lanlink-client-reader
+
+    Note over AR,BR: Start: transfer ACCEPTED, chunks flowing (see Figure 7)
+
+    alt Alice disconnects in the middle of the transfer
+        AS-xSA: TCP connection closes
+        Note over SA: receive() returns None<br/>(EOF) or raises OSError
+        Note over SA: _serve_client finally:<br/>remove alice from _users,<br/>state CLOSED
+        Note over SA: _fail_transfers_of<br/>(CONNECTION_LOST) →<br/>_fail_transfer_and_notify:<br/>FAILED, session deleted
+        SA->>BR: ERROR CONNECTION_LOST (transfer_id)
+        Note over BR: Receiver.handle_message<br/>→ _fail_and_cleanup:<br/>.part deleted, FAILED
+    else hash mismatch at the end
+        AS->>SA: FILE_END
+        SA->>BR: FILE_END (total_chunks,<br/>total_bytes)
+        Note over BR: Receiver.finish:<br/>SHA-256 ≠ offer.sha256<br/>→ HASH_MISMATCH,<br/>.part deleted, FAILED
+        BR->>SB: FILE_RESULT (ok = false,<br/>error_code = HASH_MISMATCH)
+        Note over SA,SB: FAILED,<br/>session deleted
+        SB->>AR: FILE_RESULT
+        Note over AR: SendSession FAILED<br/>(HASH_MISMATCH)
+    else no relayed message for transfer_timeout (60 s)
+        Note over SA,SB: _receive_until_deadline (wakes ≤ 0.5 s)<br/>→ _fail_transfers_of(TIMEOUT, expired_only),<br/>run by whichever worker wakes first
+        SA->>AR: ERROR TIMEOUT (transfer_id)
+        SA->>BR: ERROR TIMEOUT (transfer_id)
+        Note over BR: .part deleted, FAILED
+        Note over AR: SendSession FAILED
+    end
+    Note over AR,BR: Each client's reader also puts the ERROR or final snapshot on its<br/>commands queue, so the main thread prints the outcome.

@@ -1,0 +1,150 @@
+<h2>B Limits and timeouts</h2>
+<p>Table 10 collects every size limit and timeout. The size values are the protocol defaults (<code>DEFAULT_LIMITS</code> in <code>common/protocol.py</code>). A decoded <code>limits</code> object must contain exactly the eight keys below. Each value must stay within a ceiling (for example 1 MiB for the header and chunk limits, 65 507 B for datagrams), and the idle timeout must be greater than the heartbeat interval.</p>
+<pre><code>max_header_bytes      max_chunk_bytes       max_file_bytes     max_chat_bytes
+max_user_list_bytes   max_datagram_bytes    heartbeat_interval_s   idle_timeout_s
+</code></pre>
+<p>Table 10. Size limits and timeouts.</p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+<th>Source</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Header length N</td>
+<td>1–16 384 B</td>
+<td><code>max_header_bytes</code></td>
+<td><code>BAD_FRAME</code> / <code>HEADER_TOO_LARGE</code></td>
+</tr>
+<tr>
+<td><code>AUTH</code> payload</td>
+<td>1–256 B</td>
+<td><code>max_payload_for</code></td>
+<td><code>PAYLOAD_TOO_LARGE</code> / <code>BAD_PAYLOAD</code></td>
+</tr>
+<tr>
+<td>Chat payload</td>
+<td>1–8 192 B</td>
+<td><code>max_chat_bytes</code></td>
+<td>same</td>
+</tr>
+<tr>
+<td><code>FILE_CHUNK</code> payload, <code>chunk_size</code></td>
+<td>1–65 536 B</td>
+<td><code>max_chunk_bytes</code></td>
+<td>same; <code>INVALID_FIELD</code> for <code>chunk_size</code></td>
+</tr>
+<tr>
+<td><code>USER_LIST</code> payload</td>
+<td>request 0 B; reply 1–65 536 B</td>
+<td><code>max_user_list_bytes</code></td>
+<td>same</td>
+</tr>
+<tr>
+<td>Payload of every other type</td>
+<td>0 B</td>
+<td><code>max_payload_for</code></td>
+<td><code>PAYLOAD_TOO_LARGE</code></td>
+</tr>
+<tr>
+<td>File size</td>
+<td>0–104 857 600 B (100 MiB)</td>
+<td><code>max_file_bytes</code></td>
+<td><code>FILE_TOO_LARGE</code></td>
+</tr>
+<tr>
+<td>UDP datagram (whole frame)</td>
+<td>≤ 1 024 B</td>
+<td><code>max_datagram_bytes</code></td>
+<td><code>PAYLOAD_TOO_LARGE</code>; datagram ignored</td>
+</tr>
+<tr>
+<td>String fields (characters)</td>
+<td><code>username</code>, <code>sender</code>, <code>recipient</code> 32 (no whitespace); <code>client_name</code> 64; <code>client_version</code> 32; <code>server_name</code> 64; <code>host</code> 255; <code>message</code> 256; <code>field</code> 64; <code>status</code> 16; <code>reason</code> 128; <code>filename</code> 255 (and ≤255 UTF-8 bytes); <code>ip</code> 45</td>
+<td><code>_validate_header</code>, <code>_validate_users</code></td>
+<td><code>INVALID_FIELD</code> / <code>UNSAFE_FILENAME</code> / <code>BAD_PAYLOAD</code></td>
+</tr>
+<tr>
+<td>Integers</td>
+<td>0 to 2^63-1; <code>port</code> 1–65535</td>
+<td><code>MAX_INT</code>, <code>_integer</code></td>
+<td><code>INVALID_FIELD</code></td>
+</tr>
+<tr>
+<td>Transfer IDs per connection</td>
+<td>64</td>
+<td><code>_negotiate_file_transfer</code></td>
+<td><code>QUEUE_FULL</code></td>
+</tr>
+<tr>
+<td>Failed logins per connection</td>
+<td>3</td>
+<td><code>_dispatch_client_messages</code></td>
+<td>connection closed</td>
+</tr>
+<tr>
+<td>Concurrent connections</td>
+<td>64</td>
+<td><code>max_clients</code>, <code>--max-clients</code></td>
+<td>extra connections closed at once</td>
+</tr>
+<tr>
+<td>Handshake</td>
+<td>5.0 s for the TLS handshake, then a fresh 5.0 s for <code>HELLO</code></td>
+<td><code>handshake_timeout</code>, <code>--timeout</code></td>
+<td>connection closed, no <code>ERROR</code></td>
+</tr>
+<tr>
+<td>Idle connection</td>
+<td>45.0 s (<code>TCPServer</code> default); 120.0 s (<code>--idle-timeout</code>)</td>
+<td><code>idle_timeout</code></td>
+<td>connection closed; extended while the connection has a live transfer</td>
+</tr>
+<tr>
+<td>Transfer phase</td>
+<td>60.0 s</td>
+<td><code>transfer_timeout</code>, <code>--transfer-timeout</code></td>
+<td><code>ERROR TIMEOUT</code> to both parties; reset by every accepted or relayed transfer message</td>
+</tr>
+<tr>
+<td>Worker wake-up</td>
+<td>0.5 s</td>
+<td><code>WORKER_WAKEUP_S</code></td>
+<td>longest single wait in <code>recv()</code>; worker re-checks transfer deadlines and <code>CLOSING</code></td>
+</tr>
+<tr>
+<td>Wait for recipient&#39;s <code>AUTH_OK</code></td>
+<td>1.0 s</td>
+<td><code>AUTH_READY_WAIT_S</code></td>
+<td><code>ERROR CONNECTION_LOST</code></td>
+</tr>
+<tr>
+<td>Heartbeat interval</td>
+<td>15 s</td>
+<td><code>heartbeat_interval_s</code></td>
+<td>advertised only; nothing uses it</td>
+</tr>
+<tr>
+<td>Client request</td>
+<td>5.0 s</td>
+<td><code>--timeout</code> (<code>client/__main__.py</code>)</td>
+<td>waits for the matching reply; on expiry the client closes the session</td>
+</tr>
+<tr>
+<td>Discovery wait</td>
+<td>2.0 s</td>
+<td><code>discover_servers(wait=2.0)</code></td>
+<td>collects <code>SERVER_INFO</code> replies until then</td>
+</tr>
+<tr>
+<td>Transfer engine timeouts</td>
+<td>sender 60 s (<code>OFFERED</code>) / 30 s (later); receiver 30 s</td>
+<td><code>accept_timeout_s</code>, <code>result_timeout_s</code>, <code>idle_timeout_s</code></td>
+<td>defined in <code>check_timeout()</code>, which the CLI never calls</td>
+</tr>
+</tbody></table>
+<p>The advertised idle timeout differs from the real one: <code>HELLO_ACK</code> always advertises 45 s (the built-in server default), while the command-line server uses 120 s (<code>server/__main__.py</code>). The client checks that <code>limits</code> is valid (an invalid object fails the handshake) but never applies the values, so the wrong number has no effect at run time (<code>common/protocol.py:320-321</code>).</p>
+

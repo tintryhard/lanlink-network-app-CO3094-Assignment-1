@@ -1,0 +1,58 @@
+---
+config:
+  layout: elk
+---
+%% Figure 1. LanLink runtime architecture: server threads, shared registries and clients.
+%% Sources: server/app.py, server/discovery.py, server/sessions.py,
+%% client/__main__.py, client/private_chat.py, client/discovery.py, common/transport.py
+flowchart TB
+    D["python -m client --discover<br/>main thread only; exits after 2 s"]
+    C["Client C<br/>(same threads)"]
+    subgraph CB["Client B (same threads)"]
+        B_IN["lanlink-cli-input"]
+        B_RD["lanlink-client-reader"]
+        B_MAIN["main thread"]
+        B_SEND["lanlink-file-sender"]
+        B_SOCK[("socket + SocketTransport<br/>_write_lock")]
+        B_IN --> B_MAIN
+        B_RD --> B_MAIN
+        B_MAIN --> B_SOCK
+        B_SEND --> B_SOCK
+        B_RD --> B_SOCK
+    end
+
+
+    subgraph CA["Client A (python -m client --username …)"]
+        A_IN["lanlink-cli-input<br/>reads stdin"]
+        A_RD["lanlink-client-reader<br/>only thread that reads"]
+        A_MAIN["main thread<br/>command loop"]
+        A_SEND["lanlink-file-sender<br/>one per accepted offer"]
+        A_SOCK[("socket + SocketTransport<br/>_write_lock")]
+        A_IN -->|"line → queue"| A_MAIN
+        A_RD -->|"file event → queue"| A_MAIN
+        A_MAIN -->|"send()"| A_SOCK
+        A_SEND -->|"send()"| A_SOCK
+        A_RD -->|"receive()"| A_SOCK
+    end
+
+    subgraph SRV["Server process (python -m server)"]
+        S_MAIN["main thread<br/>serve_forever(): accept loop"]
+        DISC["lanlink-discovery (UDP)<br/>optional: off if bind fails"]
+        W_C["worker lanlink-#lt;id#gt;<br/>_serve_client (C)"]
+        W_B["worker lanlink-#lt;id#gt;<br/>_serve_client (B)"]
+        W_A["worker lanlink-#lt;id#gt;<br/>_serve_client (A)"]
+        subgraph LOCK["guarded by TCPServer._lock"]
+            REG[("_connections · _users · _transfers")]
+        end
+        S_MAIN --> W_C
+        S_MAIN -->|"one thread per<br/>accepted socket"| W_B
+        S_MAIN --> W_A
+        W_C <--> REG
+        W_B <--> REG
+        W_A <--> REG
+    end
+
+    C <==>|"TCP + TLS"| W_C
+    B_SOCK <==>|"TCP + TLS"| W_B
+    A_SOCK <==>|"TCP + TLS"| W_A
+    D <-.->|"UDP: DISCOVER broadcast to 255.255.255.255:port,<br/>SERVER_INFO unicast reply"| DISC

@@ -1,0 +1,10 @@
+<h1>6 Conclusion</h1>
+<p>The main lesson is that socket behaviour differs between operating systems, so the code must not depend on one platform&#39;s details. On Windows, shutting a socket down from another thread does not wake a thread blocked reading it, so server workers now wake every 0.5 s (Section 4.3). Windows can also reserve UDP port ranges (WinError 10013), so the server now starts without discovery when its UDP port is reserved or in use. Finally, the CLI now writes UTF-8, so non-ASCII chat text cannot crash it when its output goes to a pipe with a Windows code page.</p>
+<p>The following limitations remain; the deviations from the specification are listed in Section 1.6.</p>
+<ul>
+<li>Public chat is delivered to recipients one by one before <code>CHAT_ACK</code>. Each recipient that is not ready yet can add up to 1 s, and <code>CHAT_ACK</code> confirms that the server accepted the message, not that it was delivered.</li>
+<li>There is no heartbeat (see 1.6).</li>
+<li>Discovery sends a single <code>DISCOVER</code> broadcast with no retry, so one lost datagram means no server is found.</li>
+<li>Messages are not stored: a user who is offline never receives a message sent in the meantime.</li>
+</ul>
+

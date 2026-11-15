@@ -1,0 +1,163 @@
+/* LanLink report - print stylesheet (A4, headless Chrome).
+   The look follows the format example (Submission1.pdf, a LaTeX article): Latin Modern
+   type (the OpenType Computer Modern, in fonts/), 12 pt body, 2.5 cm side margins, black
+   headings, rule-only tables, a thin rule under the running header. No colour. */
+@font-face { font-family: "LMR"; src: url("fonts/lmroman12-regular.otf"); }
+@font-face { font-family: "LMR"; font-weight: bold; src: url("fonts/lmroman12-bold.otf"); }
+@font-face { font-family: "LMR"; font-style: italic; src: url("fonts/lmroman12-italic.otf"); }
+@font-face { font-family: "LMR"; font-weight: bold; font-style: italic; src: url("fonts/lmroman10-bolditalic.otf"); }
+@font-face { font-family: "LMR10"; src: url("fonts/lmroman10-regular.otf"); }
+@font-face { font-family: "LMR17"; src: url("fonts/lmroman17-regular.otf"); }
+@font-face { font-family: "LMM"; src: url("fonts/lmmono12-regular.otf"); }
+@font-face { font-family: "LMM"; font-weight: bold; src: url("fonts/lmmonolt10-bold.otf"); }
+
+/* ---------- pages ---------- */
+/* __NFRONT__ is replaced by build.py with the number of pages before section 1, so the
+   body starts at page 1; "fp" counts physical pages for the roman front-matter numbers. */
+html { counter-reset: page -__NFRONT__ fp -1; }
+@page { size: A4; margin: 2.3cm 2.5cm 2.5cm; counter-increment: page 1 fp 1;
+  @bottom-center { content: counter(page); font: 11pt "LMR", serif; vertical-align: top; padding-top: 8mm; }
+  @top-left { content: "Ho Chi Minh City University of Technology"; font: 10pt "LMR10", serif;
+    vertical-align: bottom; padding-bottom: 1mm; margin-bottom: 8mm; border-bottom: 0.4pt solid #000; }
+  @top-right { content: "LanLink"; font: 10pt "LMR10", serif;
+    vertical-align: bottom; padding-bottom: 1mm; margin-bottom: 8mm; border-bottom: 0.4pt solid #000; }
+}
+@page cover { @bottom-center { content: none; } @top-left { content: none; border: none; } @top-right { content: none; border: none; } }
+@page front { @bottom-center { content: counter(fp, lower-roman); font: 11pt "LMR", serif; vertical-align: top; padding-top: 8mm; } }
+
+/* ---------- base typography ---------- */
+html { font: 12pt/1.25 "LMR", "Times New Roman", serif; color: #000;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body { margin: 0; }
+p { margin: 0; text-indent: 1.5em; text-align: justify; hyphens: auto; orphans: 2; widows: 2; }
+h1 + p, h2 + p, h3 + p, li p, td p, .cap,
+h1 + .keepgrp > p, h2 + .keepgrp > p, h3 + .keepgrp > p { text-indent: 0; }
+a { color: inherit; text-decoration: none; }
+strong { font-weight: bold; }
+ul, ol { margin: 6pt 0; padding-left: 1.6em; }
+li { margin: 0 0 3pt; text-align: justify; hyphens: auto; orphans: 2; widows: 2; }
+
+code, pre, kbd { font-family: "LMM", Consolas, monospace; }
+code { font-size: 1em; overflow-wrap: break-word; hyphens: none; }
+p code, li code { overflow-wrap: anywhere; }   /* last resort: never past the right margin */
+/* Inline runs in another font (mono, bold) keep the line box at exactly the body line
+   height: otherwise their different ascent/descent makes some lines a fraction taller, a
+   line can end just past the page area, and Chrome repeats its clipped descenders at the
+   top of the next page. */
+p code, li code, td code, p strong, li strong, p em, li em { line-height: 1; }
+/* Chrome lets a line end up to ~0.4 pt below the page area, then slices the glyphs at the
+   real page edge and paints the cut-off descenders at the top of the next page (a stray
+   'p', '(' or '_' above the first line). Painting every text block 0.7 pt higher, without
+   moving it in the layout, keeps all ink inside the page area. */
+p, li, pre { position: relative; top: -0.7pt; }
+li p, td p, li pre { top: 0; }
+pre { font-size: 10pt; line-height: 1.2; white-space: pre-wrap; overflow-wrap: anywhere;
+  margin: 9pt 0 6pt; padding: 0; break-inside: avoid; }
+pre code { font-size: inherit; }
+code .nb { white-space: nowrap; }
+
+/* ---------- headings ---------- */
+h1, h2, h3 { font-weight: bold; break-after: avoid; break-inside: avoid; text-align: left; }
+h1 { font-size: 17.28pt; line-height: 1.2; margin: 0 0 13pt; }
+h2 { font-size: 14.4pt; line-height: 1.2; margin: 21pt 0 10pt; }
+h3 { font-size: 12pt; line-height: 1.25; margin: 17pt 0 8pt; }
+h1 .hn, h2 .hn, h3 .hn { margin-right: 1em; }
+h1 + h2 { margin-top: 0; }
+h2 + h3 { margin-top: 10pt; }
+
+/* ---------- title page ---------- */
+.titlepage { page: cover; height: 24.6cm; overflow: hidden; text-align: center; position: relative; }
+.titlepage .uni { font: 17.28pt/22.5pt "LMR17", serif; }
+.titlepage .logo { display: block; width: 4cm; height: auto; margin: 42pt auto 0; }
+.titlepage .course { margin-top: 52pt; font-size: 17.28pt; font-weight: bold; line-height: 1.2; }
+.titlepage .rule { width: 12.6cm; margin: 0 auto; border-top: 0.4pt solid #000; }
+.titlepage .course + .rule { margin-top: 13pt; }
+.titlepage .blk { width: 12.25cm; margin: 0 auto; text-align: left; }
+.titlepage .kind { margin-top: 13pt; font-size: 17.28pt; font-weight: bold; line-height: 1.1; }
+.titlepage .sub { font-size: 14.4pt; font-weight: bold; line-height: 1.1; }
+.titlepage .ptitle { width: 12.25cm; margin: 16pt auto 15pt; font-size: 20.74pt; font-weight: bold; line-height: 1.2; }
+.titlepage .ptitle .more { display: block; margin-top: 5pt; font-size: 12pt; }
+.titlepage table.meta { margin: 34pt auto 0; border: none; border-collapse: collapse; width: auto; max-width: 16cm; text-align: left; font-size: 12pt; line-height: 15.7pt; }
+.titlepage .meta td { border: none; padding: 0 5pt; vertical-align: top; text-align: left; }
+.titlepage .meta td.k { text-align: right; white-space: nowrap; }
+.titlepage .meta td.who { white-space: nowrap; padding-right: 12pt; }
+.titlepage .meta code { font-size: 9.5pt; }
+.titlepage .meta strong { font-weight: bold; }
+.titlepage .meta td.what { line-height: 13pt; padding-top: 1.5pt; }
+.titlepage .place { position: absolute; left: 0; right: 0; bottom: 0; font: 10pt "LMR10", serif; }
+
+/* ---------- front matter ---------- */
+.front { page: front; break-before: page; }
+h1.fm { margin: 0 0 10pt; }
+.lst h1.fm { margin-top: 20pt; }
+.tl { position: relative; overflow: hidden; padding-right: 2.2em; margin: 0; line-height: 15pt; break-inside: avoid; }
+.tl a.e { display: block; }
+.tl .n { position: absolute; left: 0; top: 0; }
+.tl .t::after { content: ". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . "; position: absolute; width: 100%; margin-left: 0.6em;
+  white-space: nowrap; overflow: hidden; letter-spacing: 0.22em; font-weight: normal; }
+.tl a.pn { position: absolute; right: 0; bottom: 0; width: 1.9em; text-align: right; background: #fff; }
+.tl.l1 { font-weight: bold; margin-top: 7pt; break-after: avoid; }
+.tl.l1 .t::after { display: none; }
+.tl.l1 a.e { padding-left: 1.5em; }
+.tl.l1.un a.e { padding-left: 0; }
+.tl.l2 { margin-left: 1.5em; }
+.tl.l2 a.e { padding-left: 2.3em; }
+.tl.l3 { margin-left: 3.8em; }
+.tl.l3 a.e { padding-left: 3.2em; }
+.tl.lf { margin-left: 1.5em; }
+.tl.lf a.e { padding-left: 2.3em; }
+
+/* ---------- body sections ---------- */
+/* Sections follow each other on the same page, as in the example. Section 4 starts a new
+   page (the assignment limits it to one page, so it is kept on one sheet), and so does the
+   appendix. */
+.sec { page: bodyp; }
+.sec + .sec > h1:first-child { margin-top: 30pt; }
+[id="04-challenges"], [id="90-apx-errors"] { break-before: page; }
+.sec[id="04-challenges"] > h1:first-child, .sec[id="90-apx-errors"] > h1:first-child { margin-top: 0; }
+.sec + .sec > h2:first-child { margin-top: 21pt; }
+
+/* ---------- tables (rules only: heavy top and bottom, light under the header) ---------- */
+.tblwrap { margin: 12pt 0 14pt; }
+.tblwrap.keep { break-inside: avoid; }
+.keepgrp { break-inside: avoid; }   /* short intro paragraph + unbreakable table (build.py) */
+.keepgrp > .tblwrap { margin-top: 8pt; }
+table { border-collapse: collapse; width: 100%; margin: 0; font-size: 10.5pt; line-height: 1.2;
+  border-top: 0.94pt solid #000; border-bottom: 0.94pt solid #000; }
+table.fixed { table-layout: fixed; }
+th, td { padding: 2.6pt 6pt; vertical-align: top; text-align: left; overflow-wrap: break-word; hyphens: none; border: none; }
+th { font-weight: bold; vertical-align: bottom; padding-top: 4pt; padding-bottom: 4pt; border-bottom: 0.58pt solid #000; }
+tbody:first-of-type tr:first-child td { padding-top: 5pt; }
+tbody:last-of-type tr:last-child td { padding-bottom: 4pt; }
+tbody.glue { break-inside: avoid; }   /* first two / last two rows of a splittable table */
+th:first-child, td:first-child { padding-left: 0; }
+th:last-child, td:last-child { padding-right: 0; }
+tr { break-inside: avoid; }
+thead { display: table-header-group; }
+td code, th code { font-size: 0.95em; }
+
+/* ---------- captions ---------- */
+.cap { text-align: center; font-size: 10.95pt; line-height: 1.25; text-wrap: balance; hyphens: none; }
+.cap .lab { font-weight: bold; }
+.tcap { margin: 0 0 6pt; break-after: avoid; }
+.pcap { margin: 6pt 1cm 0; }
+.prefig { break-inside: avoid; margin: 10pt 0 13pt; }
+
+/* ---------- figures ---------- */
+figure { margin: 13pt 0 15pt; text-align: center; break-inside: avoid; }
+figure img { display: block; margin: 0 auto; }
+figcaption { margin: 9pt 0.6cm 0; }
+figure.ownpage { break-before: page; break-after: page; margin: 0; }
+figure.full { margin-top: 0; }
+/* a screenshot not taken yet: framed box, same caption as a real figure */
+.phbox { display: flex; align-items: center; justify-content: center; margin: 0 auto; box-sizing: border-box;
+  max-width: 100%; border: 0.75pt solid #aaa; font-style: italic; color: #555; }
+/* an italic em dash makes Chrome emit a stray copy of the glyph at the top edge of the page */
+.phbox .dash { font-style: normal; }
+
+/* ---------- section 4 must stay on one page ---------- */
+/* Same 12 pt body as the rest; only the heading spacing is tighter. */
+[id="04-challenges"] h1 { margin-bottom: 10pt; }
+[id="04-challenges"] h2 { margin: 12pt 0 5pt; font-size: 12pt; }
+[id="04-challenges"] ul, [id="04-challenges"] ol { margin: 3pt 0; }
+[id="04-challenges"] li { margin-bottom: 1.5pt; }
