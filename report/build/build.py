@@ -9,13 +9,13 @@ Run `python build.py` from report/build/. One command does everything:
    back from the PDF's link destinations, and reprints until the page numbers are stable;
 4. runs the layout checks and exits non-zero if one fails.
 
-Every figure must come from report/diagrams/lucid/<name>.png. If one is missing the build
-stops with a non-zero exit code; it never falls back to a Mermaid SVG. The one exception is
-a screenshot the team has not taken yet, written ![Figure N. Caption.](placeholder:<slug>):
+Diagrams come from report/diagrams/lucid/<name>.png; screenshots use PNGs in
+report/screenshots/. Missing images stop the build; diagrams never fall back to Mermaid
+SVGs. A screenshot not taken yet may use ![Figure N. Caption.](placeholder:<slug>):
 it prints as a framed "TODO: screenshot" box with its normal caption and list entry.
 
 Team-owned text: title.md (cover page) and report/sections/07-genai.md (Use of Generative
-AI). Open items are a bold **TODO** plus an <!-- TODO: ... --> comment; the build counts
+AI, temporarily excluded from the report). Open items are a bold **TODO** plus an <!-- TODO: ... --> comment; the build counts
 the visible TODOs and fails if any "[STUDENT" text is left.
 """
 import base64, html, pathlib, re, struct, subprocess, sys
@@ -25,11 +25,11 @@ B = pathlib.Path(__file__).resolve().parent
 R = B.parent
 CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe"
 MARKED = "marked@18.2.0"
-# Body order: numbered sections 1-6, the unnumbered "Use of Generative AI" page (07-genai.md,
-# written by the team), then the appendix (90-* starts with "# Appendix", sub-headings "## A ...").
+# Body order: numbered sections 1-6, followed by References. The AI-use section is temporarily excluded;
+# keep 07-genai.md so it can be restored by adding "07-genai" to SECS.
+# Former appendix tables now live in sections 1 and 2; evidence is inline in section 4.
 SECS = ["01-architecture", "02-protocol", "03-sequences", "04-challenges", "05-testing",
-        "06-conclusion", "07-genai", "90-apx-errors", "91-apx-limits", "92-apx-threads-locks",
-        "93-apx-evidence"]
+        "06-conclusion", "08-references"]
 PH_W, PH_H = 16.0, 7.0               # placeholder screenshot box (cm): ![Figure N. ...](placeholder:slug)
 OUT = B / "LanLink-Report.pdf"
 
@@ -64,9 +64,9 @@ OWN_PAGE = {"seq-file"}              # figures that get a page of their own
 # Set FLOAT = {} to keep every figure exactly where the Markdown has it.
 FLOAT = {"seq-file": 3}
 # Column widths in % per table number, where the automatic layout wraps badly.
-TABLE_COLS = {2: [18, 10, 17, 55], 3: [14, 14, 25, 21, 26], 4: [17, 14, 37, 16, 16], 5: [15, 13, 29, 13, 30],
-              8: [17, 46, 37], 9: [27, 23, 50], 10: [16, 29, 23, 32], 11: [18, 25, 41, 16],
-              12: [22, 20, 30, 28], 13: [18, 36, 46]}
+TABLE_COLS = {2: [24, 59, 17], 3: [26, 37, 37], 4: [18, 10, 17, 55],
+              5: [14, 14, 25, 21, 26], 6: [17, 14, 37, 16, 16], 7: [15, 13, 29, 13, 30],
+              10: [27, 23, 50], 11: [26, 39, 35], 12: [25, 75]}
 KEEP_ROWS = 4                        # tables with at most this many body rows never split
 KEEP_INTRO = 600                     # a paragraph (HTML chars) this short stays with such a table
 
@@ -143,7 +143,8 @@ def process(h, sid):
                     f'<div class="phbox" style="width:{PH_W:.1f}cm;height:{PH_H:.1f}cm"><span>TODO: screenshot <span class="dash">—</span> {slug}</span></div>'
                     f'<figcaption class="cap">{label(alt)}</figcaption></figure>')
         name = src.rsplit("/", 1)[1].rsplit(".", 1)[0]
-        png = R / "diagrams" / "lucid" / f"{name}.png"
+        is_screenshot = src.startswith("../screenshots/")
+        png = R / "screenshots" / f"{name}.png" if is_screenshot else R / "diagrams" / "lucid" / f"{name}.png"
         if not png.exists():
             MISSING.append(name)
             return m.group(0)
@@ -160,7 +161,8 @@ def process(h, sid):
         lab = SMALLEST_PX.get(name, 16) * w / pw / 2.54 * 72
         if lab < MIN_LABEL_PT:
             die(f"{name}: smallest label would print at {lab:.1f} pt (< {MIN_LABEL_PT} pt)")
-        return (f'<figure class="{cls}" id="fig{num}" data-name="{name}" data-cm="{w:.2f}x{hgt:.2f}" data-dpi="{pw / w * 2.54:.0f}" data-pt="{lab:.1f}">'
+        kind = "screenshot" if is_screenshot else "diagram"
+        return (f'<figure class="{cls}" id="fig{num}" data-name="{name}" data-cm="{w:.2f}x{hgt:.2f}" data-dpi="{pw / w * 2.54:.0f}" data-pt="{lab:.1f}" data-kind="{kind}">'
                 f'<img src="data:image/png;base64,{data}" style="width:{w:.2f}cm;height:{hgt:.2f}cm" alt="">'
                 f'<figcaption class="cap">{label(alt)}</figcaption></figure>')
     h = re.sub(r'<p><img src="([^"]+)" alt="([^"]*)"></p>', fig, h)
@@ -229,9 +231,9 @@ def title_page():
     raw = [x.strip() for x in re.findall(r"<p>(.*?)</p>", t, re.S)]
     lines = [strip_tags(x) for x in raw]
     members = re.findall(r"<li>(.*?)</li>", t, re.S)
-    if len(lines) < 12 or not members:
+    if len(lines) < 11 or not members:
         die("title.md does not have the expected lines")
-    # Instructor / Class / Group keep their inline Markdown (the bold TODO markers); the
+    # Instructor / Class keep their inline Markdown; the
     # repository line uses the plain text, because marked turns the URL into a link.
     val = lambda i: raw[i].split(": ", 1)[1]
     txt = lambda i: html.escape(lines[i].split(": ", 1)[1])
@@ -256,10 +258,9 @@ def title_page():
 <table class="meta">
 <tr><td class="k">Instructor:</td><td colspan="2">{val(6)}</td></tr>
 <tr><td class="k">Class:</td><td colspan="2">{val(7)}</td></tr>
-<tr><td class="k">Group:</td><td colspan="2">{val(8)}</td></tr>
 {rows}
-<tr><td class="k">Repository:</td><td colspan="2"><code>{txt(10)}</code></td></tr></table>
-<div class="place">{html.escape(lines[11])}</div></section>'''
+<tr><td class="k">Repository:</td><td colspan="2"><code>{txt(9)}</code></td></tr></table>
+<div class="place">{html.escape(lines[10])}</div></section>'''
 
 
 def build(pages, nfront):
@@ -279,9 +280,9 @@ def build(pages, nfront):
         body.append(re.sub(r"<h([1-3])>(.*?)</h\1>", hid, h, flags=re.S))
     full = "".join(body)
     if MISSING:
-        die("no Lucid PNG for: " + ", ".join(sorted(set(MISSING))) + " (report/diagrams/lucid/<name>.png); refusing to fall back to Mermaid SVG")
+        die("no PNG for: " + ", ".join(sorted(set(MISSING))) + " (report/diagrams/lucid/ or report/screenshots/)")
     if re.search(r'<img src="(?!data:image/png)', full):
-        die("an image in the body is not a Lucid PNG")
+        die("an image in the body is not an embedded PNG")
 
     figs = [(int(m.group(1)), strip_tags(m.group(2))) for m in
             re.finditer(r'id="fig(\d+)".*?<(?:figcaption|p) class="cap(?: pcap)?">(.*?)</(?:figcaption|p)>', full, re.S)]
@@ -415,7 +416,7 @@ def checks(pages, nfront, count, toc, figs, tabs, nph):
             if gap > 8.8:
                 loose.append(f"p.{i + 1 - nfront} gap {gap:.1f}pt: {' '.join(w[4] for w in ws)[:70]}")
     nimg = sum(len(p.get_image_info()) for p in doc)
-    if nimg != len(figs) - nph + 1:  # every Lucid figure (placeholders are boxes), plus the logo
+    if nimg != len(figs) - nph + 1:  # every diagram/screenshot (placeholders are boxes), plus the logo
         bad.append(f"{nimg} images in the PDF, expected {len(figs) - nph + 1}")
     if sum(p.get_text().count("[STUDENT") for p in doc):
         bad.append("'[STUDENT' text is still in the PDF (use a bold TODO and an HTML comment)")
@@ -441,8 +442,9 @@ def main():
         die("page numbers did not become stable")
     phs = re.findall(r'<figure [^>]*id="fig(\d+)" data-ph="([^"]+)"', h)
     bad, todo, loose = checks(pages, nfront, count, toc, figs, tabs, len(phs))
+    nscreens = h.count('data-kind="screenshot"')
     print(f"pages {count} (title 1 + front {nfront - 1} + body {count - nfront}); visible TODO x{todo}; "
-          f"figures {len(figs)} ({len(figs) - len(phs)} Lucid PNG, {len(phs)} placeholder); tables {len(tabs)}")
+          f"figures {len(figs)} ({len(figs) - len(phs) - nscreens} Lucid PNG, {nscreens} screenshots, {len(phs)} placeholder); tables {len(tabs)}")
     for lvl, txt, aid, num, rest, s in toc:
         if lvl == 1 or (s.startswith("9") and lvl == 2):
             print(f"  {txt}: body p.{pages[aid] - nfront}")

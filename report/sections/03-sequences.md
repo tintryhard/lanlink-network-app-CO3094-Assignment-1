@@ -3,12 +3,12 @@
 This section follows a chat message and a file transfer through the system. In Figures 5
 to 9 one lifeline is one thread, not one host: the server has a main thread that accepts
 connections and one worker thread per client, and each client has a main thread, a keyboard
-thread, a reader thread and, while it sends a file, a file-sender thread (Table 11,
-Appendix C). The server has no central router thread. The worker of the connection that
+thread, a reader thread and, while it sends a file, a file-sender thread (Table 2,
+Section 1.3.1). The server has no central router thread. The worker of the connection that
 *sent* a message writes the forwarded copy straight into the recipient's socket; a write
 lock per socket keeps this frame from interleaving with the recipient worker's own replies.
-Error codes are listed in Table 9 (Appendix A), limits and timeouts in Table 10
-(Appendix B), and the connection and transfer states in Figures 3 and 4.
+Error codes are listed in Table 10 (Section 2.5), limits and timeouts in Table 11
+(Section 2.6.1), and the connection and transfer states in Figures 3 and 4.
 
 ## 3.1 Login and user list
 
@@ -77,7 +77,7 @@ Figure 7 shows a successful transfer: negotiation, chunk stream, verification.
 6. Alice's worker relays each message to Bob without reading the data, moving the session
    to `TRANSFERRING` and then `VERIFYING`.
 7. Bob's reader checks each chunk's `seq` and size, appends it to the `.part` file and
-   updates a running SHA-256.
+   updates a running SHA-256 digest <a href="#ref8">[8]</a>.
 8. On `FILE_END`, Bob's client checks the counts and the digest against the offer, flushes
    the file to disk and renames it to its final name in one atomic step.
 9. Bob sends `FILE_RESULT` with `ok = true`; his worker marks the session `COMPLETED` and

@@ -109,17 +109,26 @@ h1.fm { margin: 0 0 10pt; }
 
 /* ---------- body sections ---------- */
 /* Sections follow each other on the same page, as in the example. Section 4 starts a new
-   page (the assignment limits it to one page, so it is kept on one sheet), and so does the
-   appendix. */
+   page because the assignment limits the reflection to one sheet. */
 .sec { page: bodyp; }
 .sec + .sec > h1:first-child { margin-top: 30pt; }
-[id="04-challenges"], [id="90-apx-errors"] { break-before: page; }
-.sec[id="04-challenges"] > h1:first-child, .sec[id="90-apx-errors"] > h1:first-child { margin-top: 0; }
+[id="04-challenges"] { break-before: page; break-after: page; }
+.sec[id="04-challenges"] > h1:first-child { margin-top: 0; }
 .sec + .sec > h2:first-child { margin-top: 21pt; }
+
+/* References start on a separate page, with hanging indents and intact entries. */
+[id="08-references"] { break-before: page; }
+.sec[id="08-references"] > h1:first-child { margin-top: 0; }
+[id="08-references"] > h1 + p { margin-bottom: 14pt; }
+p.reference { font-size: 11pt; line-height: 1.25; text-align: left;
+  padding-left: 2em; text-indent: -2em; margin-bottom: 10pt; break-inside: avoid; }
+p.reference a { overflow-wrap: anywhere; }
 
 /* ---------- tables (rules only: heavy top and bottom, light under the header) ---------- */
 .tblwrap { margin: 12pt 0 14pt; }
 .tblwrap.keep { break-inside: avoid; }
+/* Keep the file-message catalogue and its caption together after section reflow. */
+.tblwrap[id="tab7"] { break-inside: avoid; }
 .keepgrp { break-inside: avoid; }   /* short intro paragraph + unbreakable table (build.py) */
 .keepgrp > .tblwrap { margin-top: 8pt; }
 table { border-collapse: collapse; width: 100%; margin: 0; font-size: 10.5pt; line-height: 1.2;
@@ -155,9 +164,3 @@ figure.full { margin-top: 0; }
 /* an italic em dash makes Chrome emit a stray copy of the glyph at the top edge of the page */
 .phbox .dash { font-style: normal; }
 
-/* ---------- section 4 must stay on one page ---------- */
-/* Same 12 pt body as the rest; only the heading spacing is tighter. */
-[id="04-challenges"] h1 { margin-bottom: 10pt; }
-[id="04-challenges"] h2 { margin: 12pt 0 5pt; font-size: 12pt; }
-[id="04-challenges"] ul, [id="04-challenges"] ol { margin: 3pt 0; }
-[id="04-challenges"] li { margin-bottom: 1.5pt; }

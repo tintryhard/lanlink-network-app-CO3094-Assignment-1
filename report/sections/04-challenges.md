@@ -1,25 +1,46 @@
 # 4 Challenges & Solutions
 
-Table 13 in Appendix E lists the commits and tests behind each challenge.
+LanLink required careful handling of TCP framing, concurrent access, failed
+connections and forwarding delays. These challenges led to the following
+design decisions and failure-handling improvements.
 
-## 4.1 Frame boundaries on a TCP stream
+## 4.1 Preserving message boundaries and write integrity
 
-<!-- TODO: team to confirm whether this was observed (e.g. in Wireshark/terminal) or designed against from the start -->
+TCP delivers a byte stream: one read may contain part of a frame or several
+frames. Concurrent writers also need coordination to avoid mixing frame
+bytes. LanLink uses the length-prefixed format in Section 2.2, retains
+incomplete data between reads and stops decoding after a corrupt frame.
+A per-connection write lock protects each complete send. Tests check decoding
+at every split point of a three-frame stream and verify that 400 frames
+written by four threads arrive intact.
 
-**Problem.** One read from a TCP socket can return half a frame or several frames, and several threads may write to one socket at once. **Cause.** TCP delivers a byte stream with no message boundaries, and two unsynchronised writes can interleave their bytes. **Solution.** Every frame starts with a 4-byte header length, and the header gives the payload length (Section 2.2). The decoder keeps unfinished bytes between reads and rejects the rest of the stream after a corrupt frame, and each socket has one write lock, so a frame is always written whole. **Verified.** `test_all_splits_and_coalescing` cuts a three-frame stream at every byte offset and checks that the same frames come out.
+## 4.2 Coordinating shared state without deadlock
 
-## 4.2 Avoiding deadlock
+Server workers share registries and per-transfer locks. Inconsistent lock
+ordering could cause deadlock; socket I/O under the registry lock could
+delay unrelated clients. When locks are nested, the transfer lock comes
+before the registry lock, as described in Section 1.3.2. Workers release
+the registry lock before socket reads or writes. A client cleanup test
+checks the related rule that its shared lock stays available during
+socket shutdown; it does not establish that all server deadlocks are impossible.
 
-<!-- TODO: team to confirm whether this was observed (e.g. in Wireshark/terminal) or designed against from the start -->
+## 4.3 Cleaning up failed connections
 
-**Problem.** All server threads share one registry lock, and each file transfer has its own lock. **Cause.** Two threads that take two locks in opposite orders can wait for each other forever, and a send to a slow peer blocks, so a send under a shared lock stalls every client. **Solution.** We use one fixed order, the transfer lock before the registry lock (Table 12 in Appendix D), and no thread reads or writes a socket while it holds the registry lock. **Verified.** `test_cleanup_releases_shared_lock_during_socket_operations` checks the same rule on the client: its shared lock stays free during socket shutdown.
+An earlier client failure path could leave its reader thread running after
+disconnection. Windows testing also exposed delayed removal of a peer after
+a forwarding failure. The client now closes its socket on the first failure
+and wakes pending requests. The server marks a failed recipient `CLOSING`
+and shuts down its socket. Workers check state using read-polling intervals
+of at most 0.5 seconds, without guaranteeing cleanup within that time.
+The forwarding-failure test checks `CONNECTION_LOST` and peer removal within three seconds.
 
-## 4.3 Detecting closed connections
+## 4.4 Reducing delays before chat acknowledgment
 
-**Problem.** An early client reader thread kept running after the server had shut down its socket, and on Windows the test suite did not pass until the server could drop a peer whose write had failed. **Cause.** Only a thread that reads or writes a socket learns that the connection is gone; the old client error path never closed its own socket, and on Windows shutting a socket down from another thread does not wake a thread blocked reading it. **Solution.** The client now shuts down and closes its socket once, on the first failure; the server marks a peer `CLOSING` after a failed write, and every worker checks for that state every 0.5 s. **Verified.** `test_forward_write_failure_returns_connection_lost` injects a write failure and checks that the sender gets `CONNECTION_LOST` and the peer leaves the user list within 3 s.
-
-## 4.4 Timeouts vs. blocking public-chat fan-out
-
-<!-- TODO: team to confirm whether this was observed (e.g. in Wireshark/terminal) or designed against from the start -->
-
-**Problem.** The server delivers a public message to each recipient one by one before it acknowledges the sender, so the sender could reach its 5 s request timeout first. **Cause.** Before forwarding, the server waits until the recipient's own `AUTH_OK` has been sent, and this wait was bounded only by the idle timeout (45 s in the code, 120 s from the command line). **Solution.** The wait is now at most 1 s per recipient on every route. **Verified.** `test_chat_ack_arrives_before_client_timeout` makes the server treat a recipient's `AUTH_OK` as still pending and checks that the sender's private message gets `ERROR CONNECTION_LOST` before the test client's 3 s request timeout; no test times the public route.
+Public chat forwards to recipients sequentially before acknowledging the
+sender. Waiting for a recipient's authentication response could therefore
+contribute to a sender timeout. The authentication-readiness wait is now
+limited to one second per recipient instead of the longer idle timeout.
+This reduces one source of delay, but waits and blocking writes can still
+accumulate. The existing timeout test covers the private-message route,
+not public-broadcast timing. The change is therefore a partial improvement;
+slow-recipient isolation remains future work.

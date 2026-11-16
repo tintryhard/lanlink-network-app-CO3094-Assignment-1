@@ -10,21 +10,15 @@ Assignment 1 – Technical Explanation Report
 
 **LANLINK — DISTRIBUTED CLIENT-SERVER COLLABORATION APPLICATION**
 
-<!-- TODO: fill in the instructor's name, the class code and the group number below -->
+Instructor: Nguyễn Lê Duy Lai
 
-Instructor: **TODO**
-
-Class: **TODO**
-
-Group: **TODO**
+Class: TN01
 
 Students:
 
-<!-- TODO: fill in each member's full name and student ID; keep the responsibility in brackets as it is (or correct it) -->
-
-- **TODO: name** - **TODO: ID** (`server/`, `common/transport.py`, `common/tls.py`)
-- **TODO: name** - **TODO: ID** (`client/`)
-- **TODO: name** - **TODO: ID** (`common/models.py`, `common/errors.py`, `common/protocol.py`, `common/builders.py`, `transfer/`)
+- Nguyễn Ngọc Thạch - 2413218
+- Phan Phước Thiện Quang - 2412843
+- Lê Đức Nguyên Khoa - 2411603
 
 Repository: https://github.com/tintryhard/lanlink-network-app-CO3094-Assignment-1.git
 

@@ -1,10 +1,22 @@
 # 6 Conclusion
 
-The main lesson is that socket behaviour differs between operating systems, so the code must not depend on one platform's details. On Windows, shutting a socket down from another thread does not wake a thread blocked reading it, so server workers now wake every 0.5 s (Section 4.3). Windows can also reserve UDP port ranges (WinError 10013), so the server now starts without discovery when its UDP port is reserved or in use. Finally, the CLI now writes UTF-8, so non-ASCII chat text cannot crash it when its output goes to a pipe with a Windows code page.
+LanLink provides authenticated private and public chat, an online user list and file
+transfer through a central server. Clients keep a TCP connection for their session,
+use TLS when communicating across the LAN, and can find the server through optional
+UDP discovery. File transfers include recipient approval and checks of the received
+size and SHA-256 digest before completion is confirmed.
 
-The following limitations remain; the deviations from the specification are listed in Section 1.6.
+Building the application showed how much coordination is needed above the transport
+layer. The application must define message boundaries, match replies to requests,
+protect shared state and handle interrupted connections without leaving unfinished
+transfers behind. Separating the interface, networking and transfer logic made these
+behaviours easier to test. The automated tests cover framing, concurrent connections,
+authentication, file integrity and failure handling, while the terminal demonstration
+shows private chat, public chat and a completed file transfer.
 
-- Public chat is delivered to recipients one by one before `CHAT_ACK`. Each recipient that is not ready yet can add up to 1 s, and `CHAT_ACK` confirms that the server accepted the message, not that it was delivered.
-- There is no heartbeat (see 1.6).
-- Discovery sends a single `DISCOVER` broadcast with no retry, so one lost datagram means no server is found.
-- Messages are not stored: a user who is offline never receives a message sent in the meantime.
+The current version is intended for live communication between online users. Public
+messages are forwarded to recipients in sequence, discovery has no retry, and there
+is no heartbeat or storage for offline messages. Future work could improve connection
+monitoring, make discovery less sensitive to packet loss and reduce the effect of a
+slow recipient on public chat. These improvements would extend the existing design
+without changing the basic client-server model.

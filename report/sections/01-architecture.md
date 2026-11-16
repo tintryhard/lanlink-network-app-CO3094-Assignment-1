@@ -1,41 +1,40 @@
 # 1 System Architecture
 
-## 1.1 Overview and deployment model
-
 LanLink is a chat and file-transfer application for a local network, made of a server
 and a command-line client. One server runs on one host of the LAN. Each client keeps
 one TCP connection to it for the whole session, protected by TLS on the LAN. The server
 relays all traffic; clients never connect to each other.
 
-## 1.2 Components and data paths
+## 1.1 Components and data paths
 
-Figure 1 shows the threads of a running system with three clients.
+Figure 1 shows the server's accept loop, connection workers and shared registries,
+together with three clients and the UDP discovery path.
 
 ![Figure 1. LanLink runtime architecture: server threads, shared registries and clients. Thick links are TCP connections (TLS is required except on loopback); the dotted link is UDP discovery.](../diagrams/architecture.svg)
 
-The server's main thread runs the accept loop and starts one worker thread per accepted
-socket. The worker performs the TLS handshake, the `HELLO` exchange and the login, then
-handles that client's requests in order. Because the TLS handshake runs in the worker,
-a slow or hostile client cannot block new connections.
+The server's main thread accepts TCP connections and starts one worker for each
+accepted socket. That worker performs the TLS handshake and the `HELLO` exchange,
+then handles authentication and later requests in its message loop. Running the
+handshake in the worker leaves the accept loop free to handle further connections,
+subject to the connection limit.
 
-The workers share three registries under one lock: open connections, logged-in users
-and active file transfers. To forward a message, the sender's worker looks up the
-recipient and writes the frame directly onto the recipient's connection; the
-recipient's own worker is not involved.
+Workers share registries of connections, authenticated users and file transfers.
+When forwarding a message, the sending connection's worker looks up the recipient
+and writes to that recipient's socket through the connection transport.
 
-An optional discovery thread answers each UDP `DISCOVER` sent to the server's port
-number with a `SERVER_INFO`. If that UDP port is reserved or already in use, the server
-prints a warning and runs without discovery.
+A separate discovery thread answers UDP `DISCOVER` requests with `SERVER_INFO`.
+Discovery is optional: if the UDP port is unavailable because of a permission error
+or an address conflict, the server prints a warning and continues serving TCP clients.
 
-A logged-in client has four threads. An input thread queues the lines the user types.
-A reader thread, the only one that reads the socket, prints incoming chat, hands each
-reply to the request waiting for it and queues file events. The main thread handles one
-queued item at a time. For each accepted outgoing file, a sender thread sends the
-chunks, so the reader keeps reading. Table 11 in Appendix C lists every thread.
+The client has three persistent threads: the main thread handles commands and file
+events, the input thread reads typed commands, and the reader thread receives socket
+messages. Each accepted outgoing transfer starts a temporary sender thread. Table 2
+in Section 1.3.1 gives their roles and responsibilities.
 
-## 1.3 Layer separation
+## 1.2 Layer separation
 
-Table 1 maps the modules to the three layers that the specification asks to separate.
+Layered organisation separates networking responsibilities <a href="#ref1">[1]</a>.
+Table 1 groups the modules into user-interface, network and data-processing layers.
 
 Table 1. Layer separation: modules per layer.
 
@@ -45,79 +44,113 @@ Table 1. Layer separation: modules per layer.
 | Network | `common/transport.py`, `common/tls.py`, `common/handshake.py`, `client/connection.py`, `client/discovery.py`, `client/private_chat.py`, `server/app.py`, `server/discovery.py`, `server/sessions.py` |
 | Data processing | `common/protocol.py`, `common/builders.py`, `common/models.py`, `common/errors.py`, `transfer/*.py`, `server/auth.py` |
 
-A search of the imports shows that no data-processing module imports the socket or TLS
-modules, and an automated test enforces this for the codec and the transfer engine. The
-transfer engines use the threading module only for a lock and a cancel flag; they start
-no threads. Two imperfections remain: the helper for the `HELLO` exchange sits in the
-shared package but sends and receives frames, and on the client one class both owns
-the socket and routes file messages to the transfer engines.
+The codec and transfer engine contain no socket or TLS imports; the automated layering
+test checks this boundary. The transfer engine uses locks and cancellation flags but
+starts no threads. The network layer handles the `HELLO` exchange and dispatches
+incoming messages to the codec and transfer engines.
 
-## 1.4 Concurrency model
+## 1.3 Concurrency model
 
-All sockets are blocking, so each client gets its own server thread and a slow client
-delays nobody else. The number of workers is capped, at 64 by default; a connection
-above the cap is closed as soon as it is accepted.
+The server uses blocking socket operations with timeouts and one worker per connection.
+The Python socket HOWTO describes using a separate thread to handle each accepted
+connection <a href="#ref2">[2]</a>.
+It allows up to 64 simultaneous connections by default and closes further sockets
+after accepting them. Workers release the shared registry lock before socket reads,
+writes or password hashing. A slow recipient can still delay workers forwarding to
+its connection.
 
-After `HELLO`, a worker never blocks in `recv()` for more than 0.5 s. On each wake-up it
-fails its overdue transfers and exits if another thread has marked its connection as
-closing. The wake-up is needed because on Windows, shutting a socket down from another
-thread does not wake a thread blocked reading it.
+### 1.3.1 Threads
 
-Shared data is protected by a few locks, listed in Table 12 (Appendix D). They are
-always taken in one fixed order: the lock of a single transfer first, then the
-registry lock or a socket's write lock, never the reverse. The registry lock is held
-only for short dictionary and state updates, never while a thread reads or writes a
-socket or hashes a password. With one order and no socket reads or writes under the
-shared lock, two threads cannot end up waiting for each other's locks, and one slow
-client cannot hold up the rest.
+Table 2 lists the threads used by the server and client. With N connection workers and
+discovery enabled, the server runs N + 2 threads. A logged-in CLI runs three persistent
+threads, plus one sender thread for each outgoing transfer that is sending.
 
-Several threads may write to the same socket: on the server, any worker that forwards
-to a client, next to that client's own worker; on the client, the main, reader and
-sender threads. Each connection has one write lock, held for the whole write of one
-frame, so frames from different threads never interleave. If a write fails halfway,
-the stream may hold a partial frame, so the server marks that client as closing and
-shuts its socket down; its worker exits at the next wake-up.
+Table 2. Threads on the server and the client.
 
-The 10–20 concurrent clients the specification requires stay well below the cap. One test
-connects 20 clients at once and checks for 20 live workers after their parallel `HELLO`
-exchanges (localhost, no TLS, handshake only). Another sends 400 frames from 4 threads
-through one connection and receives all of them intact. Both pass on the current code.
+| Thread | What it does | How many |
+| --- | --- | --- |
+| Server main thread | Accept loop (0.1 s accept timeout); starts discovery and one worker per accepted socket; closes sockets above `--max-clients`; on shutdown, joins all workers | 1 |
+| Server discovery thread | Answers each valid `DISCOVER` with a unicast `SERVER_INFO`; daemon | 0 or 1 (0 if the UDP bind fails) |
+| Server connection worker | TLS handshake, `HELLO`, login, request loop, cleanup; also writes forwarded chat and file messages onto other clients' connections; after `HELLO`, sets read-polling deadlines at most 0.5 s ahead | 1 per connection, at most `--max-clients` (default 64) |
+| Client main thread (login run) | Command loop: takes one item at a time from the command/event queue (typed line, file event, final transfer snapshot); sends requests and waits for their replies | 1 |
+| Client input thread | Reads one stdin line per prompt and queues it; end of input becomes `/logout`; daemon | 1 |
+| Client reader thread | Only reader of the socket: prints chats, hands replies to waiting requests by `ref_request_id`, feeds file messages to the engines and sends their replies (e.g. `FILE_RESULT`), queues file events; not a daemon, joined when the client closes | 1 |
+| Client file-sender thread | Sends every `FILE_CHUNK` and the `FILE_END`; daemon | 1 per accepted outgoing transfer |
+| Client main thread (`--discover` or handshake-only run) | One broadcast, collects `SERVER_INFO` replies for 2 s, exits; or one `HELLO` exchange, then exit | 1 |
 
-## 1.5 Transport and security
+After `HELLO`, the worker's receive loop sets read deadlines no more than 0.5 s ahead.
+On a read timeout it checks transfer deadlines and whether the connection is closing.
+This polling supports connection cleanup during Windows operation (Section 4.3);
+time spent writing, processing messages or waiting for locks is outside the read deadline.
 
-Chat, control and file messages need reliable, ordered delivery, so they use TCP. UDP
-carries only discovery, because a client that does not yet know the server's address
-can still send a broadcast.
+The concurrency test connects 20 clients and performs their `HELLO` exchanges in
+parallel, then checks that all 20 workers are alive. It uses plaintext loopback
+connections and does not measure an authenticated chat or file-transfer workload.
 
-TLS, version 1.2 or newer, comes from Python's standard library. The server holds a
-self-signed certificate and each client trusts exactly a copy of it, so only the holder
-of the private key can complete the handshake; the host-name check is skipped because
-the certificate is pinned and a LAN address may change. TLS protects the
-confidentiality and integrity of the whole stream, including the login password.
-Without TLS, both programs accept only loopback addresses.
+### 1.3.2 Locks and lock order
 
-Passwords are stored as a random 16-byte salt and a PBKDF2-HMAC-SHA256 hash with
-600 000 iterations, and compared in constant time. An unknown user name is checked
-against a dummy record, so both kinds of failure take the same time. After three failed
-logins the server closes the connection.
+Table 3 identifies the locks, the data they protect and whether they are held during
+socket reads or writes.
 
-## 1.6 Deviations from the specification
+Table 3. Locks, what they protect and whether they are held during socket I/O.
 
-This subsection collects every point where LanLink differs from the specification.
+| Lock | Protects | Held during socket I/O |
+| --- | --- | --- |
+| Server registry lock | connections, users and file transfers; connection state; transfer status and deadline; the atomic check-and-insert at login | never while a thread reads or writes a socket or hashes a password (the accept loop does close an over-cap socket and start a worker under it) |
+| Per-transfer lock | the order in which one transfer's messages are checked and forwarded | yes, while forwarding to the other party or sending `ERROR` to both |
+| Connection write lock | one `sendall()` of one whole frame | yes (its purpose) |
+| Client session lock | pending requests, incoming offers, live transfers, the stored connection error | never |
+| Transfer-engine reentrant lock | one transfer's client-side state | never; callbacks run after it is released |
 
-- **Encryption.** The rubric asks to encrypt the payloads; LanLink encrypts the whole
-  TCP connection with TLS instead, which the specification allows ("TLS/SSL sockets").
-  UDP discovery is neither encrypted nor authenticated, but a fake server cannot pass
-  the client's pinned-certificate check in the later TLS handshake.
-- **Presence and user list.** Discovery finds the server only; clients never broadcast
-  their presence. The user list is pulled with `USER_LIST` after login and on request,
-  never pushed, so it is not live.
-- **Heartbeat.** There is no heartbeat: `PING` and `PONG` exist in the codec but are
-  never sent, and a logged-in client that sends `PING` gets an `ERROR`
-  (`INVALID_FIELD`) and is disconnected. The server detects a silent client only by its
-  idle timeout (45 s default in the code, 120 s from the command line) or a failed
-  write. The 15 s heartbeat and 45 s idle values advertised in `HELLO_ACK` are unused.
-- **Peer-to-peer.** The specification describes peer-to-peer collaboration, but
-  LanLink has no peer-to-peer path. The server relays all chat and file traffic.
-- **End-of-Message flags.** LanLink has no End-of-Message flag. Frames are delimited by
-  a length prefix instead (see 2.1).
+When server locks are nested, the transfer lock comes before the registry or socket
+write lock. The registry lock is released before acquiring a transfer or write lock, and
+the write lock is held only around `sendall()`. On the client, the shared session
+lock and engine locks are not nested; engine callbacks run after the engine lock
+is released.
+
+Several threads can write to the same connection. Each connection transport holds its
+write lock for one complete frame, preventing concurrent frames from interleaving.
+The concurrent-write test sends 400 frames from four threads through one connection
+and checks that they arrive intact.
+
+A failed write may leave a partial frame on the recipient's stream. The server marks
+that connection `CLOSING` and shuts down its socket. The worker checks that state in
+its receive loop; the 0.5 s read-polling interval is not a guaranteed termination time.
+
+## 1.4 Transport and security
+
+TCP provides reliable, ordered byte-stream delivery <a href="#ref3">[3]</a>, which
+suits LanLink's session, chat and file-transfer messages. UDP provides datagram
+delivery without reliability guarantees <a href="#ref4">[4]</a>. LanLink uses UDP
+for discovery, allowing a client to broadcast before it knows the server's address.
+
+LAN connections use TLS 1.2 or newer through Python's standard `ssl` module
+<a href="#ref5">[5]</a>. The server
+loads its certificate and private key using `--cert` and `--key`. Clients load the
+server's self-signed certificate using `--cafile` and verify the server during the TLS
+handshake. Hostname checking is disabled because the server's LAN address may change.
+Without TLS, both programs restrict connections to loopback addresses.
+
+TLS protects the full TCP stream, including login passwords, message headers and file
+data. UDP discovery is unencrypted and unauthenticated. A discovery reply does not
+establish trust: the subsequent TLS connection must pass certificate verification.
+
+Password derivation uses PBKDF2-HMAC-SHA256 <a href="#ref6">[6]</a>. The account file
+stores the derived hashes with a random 16-byte salt and 600 000 iterations.
+The server uses `hmac.compare_digest()` to
+compare the derived and stored hashes. It also runs PBKDF2 for unknown usernames,
+using a dummy record. Three failed login attempts close the connection.
+
+## 1.5 Scope and limitations
+
+LanLink supports authenticated chat and server-relayed file transfer, but its presence
+and connection-monitoring features have the following limits.
+
+- **Presence and user list.** UDP discovery finds servers. Clients do not broadcast
+  their presence, and the user list is requested after login and through `/users`.
+  Changes in online users are not pushed to other clients.
+- **Heartbeat.** `PING` and `PONG` are defined in the codec but have no server handler.
+  After login, sending `PING` produces an `ERROR` with code `INVALID_FIELD`, followed
+  by disconnection. Connection cleanup relies on idle timeouts and I/O failures. The
+  advertised heartbeat and idle values in `HELLO_ACK` are not applied by the client;
+  Section 2.6.1 details the advertised and configured timeout values.
