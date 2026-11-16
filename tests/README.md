@@ -15,4 +15,4 @@ Run everything with `python -m pytest -q tests`. It takes about 70 s. The integr
 - `tests/integration/test_concurrency.py::running(...)` starts a `TCPServer` in a background thread and shuts it down after the `with` block. Most integration tests use it.
 - The TLS tests create a short-lived certificate with `openssl`. They are skipped if `openssl` is not installed.
 - The CLI tests replace `client.__main__._read_command` and `getpass.getpass` to type commands and passwords automatically.
-- There is one known failure: `test_public_chat.py::test_cli_sends_and_receives_public_while_preserving_private_chat` expects the text "best-effort broadcast", which the CLI never prints.
+- The Tkinter GUI (`client/gui.py`) has no automated tests: it needs a display. It only calls client code that the CLI tests already cover.

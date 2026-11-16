@@ -5,7 +5,7 @@ Code shared by the client and the server. Only `transport.py` and `tls.py` touch
 | File | What it does |
 |---|---|
 | `models.py` | `MessageType`, the frozen `Message` record, `TransferStatus` with its legal transitions (`ALLOWED_TRANSITIONS`, `check_transition`), `TransferSnapshot`, `ConnectionState`, `UserInfo` |
-| `errors.py` | `ErrorCode` (the codes sent in `ERROR` messages), Vietnamese user messages, and the exceptions `LanLinkError` > `ProtocolError` / `TransferError` |
+| `errors.py` | `ErrorCode` (the codes sent in `ERROR` messages), short English user messages, and the exceptions `LanLinkError` > `ProtocolError` / `TransferError` |
 | `protocol.py` | The codec. It encodes and decodes frames, holds the schema of every message type, validates each field, checks which message types may travel in which `Direction`, and has `FrameDecoder` for TCP streams and `decode_datagram` for UDP |
 | `builders.py` | One `build_*` function per message type. Each one fills in the fields and validates the result through `protocol.py` |
 | `transport.py` | `SocketTransport`: send and receive whole `Message`s over one socket |

@@ -17,6 +17,7 @@ It has no HTTP framework, no WebSockets and no third-party runtime packages.
 | Resilience | Timeouts, disconnects and broken pipes end only that client's session and transfers |
 | Security | TLS 1.2+ (stdlib `ssl`); without TLS the app only runs on localhost |
 | CLI | User list, incoming messages and a text progress bar for transfers |
+| GUI | Optional Tkinter window (`python -m client.gui`) with the same features |
 | Discovery | UDP broadcast `DISCOVER` → `SERVER_INFO`, so clients can find the server |
 
 ## Architecture
@@ -42,7 +43,7 @@ Every message on the wire is a frame:
 The layers are kept apart:
 - **Network:** `common/transport.py`, `server/app.py` and `client/private_chat.py`.
 - **Data processing:** `common/protocol.py`, `common/builders.py` and `transfer/`, which have no socket code.
-- **User interface:** `client/__main__.py` and `client/display.py`.
+- **User interface:** `client/__main__.py` and `client/display.py` (CLI), `client/gui.py` (GUI).
 
 The full protocol, the state diagrams and the message flows are in [docs/architecture.md](docs/architecture.md).
 
@@ -52,7 +53,7 @@ The full protocol, the state diagrams and the message flows are in [docs/archite
 |---|---|
 | [`common/`](common/README.md) | Code shared by client and server: frame codec, message builders, socket transport, TLS |
 | [`server/`](server/README.md) | Threaded server, password store, UDP discovery responder |
-| [`client/`](client/README.md) | CLI, client session (reader thread), discovery, text formatting |
+| [`client/`](client/README.md) | CLI and Tkinter GUI, client session (reader thread), discovery, text formatting |
 | [`transfer/`](transfer/README.md) | File engine: chunking, SHA-256, `.part` files, progress |
 | [`tests/`](tests/README.md) | Unit and real-socket integration tests |
 | [`scripts/`](scripts/README.md) | Dev certificate script |
@@ -103,6 +104,19 @@ Plaintext is refused for any address other than localhost, so a LAN needs TLS.
    ```
 
 If the network blocks broadcast, `--discover` finds nothing. Use the server's IP directly.
+
+## GUI (optional)
+
+```bash
+python -m client.gui
+```
+
+- **Login.** Fill in username, password and the server address. **Scan LAN** runs the same UDP discovery as `--discover` and fills in the address. For a LAN, tick **Use TLS** and pick `server.crt`.
+- **Chat.** The sidebar lists `# everyone` (public chat) and one conversation per user (● online, ○ offline, `(N)` unread). Each conversation keeps its own history.
+- **Files.** The **+** button offers a file to the user of the open conversation. Incoming offers open an Accept/Reject dialog, and a progress bar shows running transfers.
+
+Tkinter is part of the standard library. On Debian/Ubuntu it is packaged separately: `sudo apt install python3-tk`.
+On Linux the GUI turns off the X input method, so keys go straight into the fields. An IME such as IBus cannot compose accented text there, but pasted text works.
 
 ## Client commands
 

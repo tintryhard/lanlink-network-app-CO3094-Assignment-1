@@ -12,12 +12,12 @@
  any client ──UDP──► discovery thread (same port number) ──► SERVER_INFO           │
                  └─────────────────────────────────────────────────────────────────┘
 
- Client process: main (CLI loop) · input (stdin) · reader (socket) · file sender (chunks)
+ Client process: main (CLI loop or Tk window) · input (stdin, CLI only) · reader (socket) · file sender (chunks)
 ```
 
 | Layer | Modules |
 |---|---|
-| User interface | `client/__main__.py`, `client/display.py` |
+| User interface | `client/__main__.py`, `client/display.py`, `client/gui.py` |
 | Network | `client/private_chat.py`, `client/connection.py`, `client/discovery.py`, `server/app.py`, `server/discovery.py`, `common/transport.py`, `common/tls.py` |
 | Data processing (no sockets) | `common/protocol.py`, `common/builders.py`, `common/models.py`, `transfer/` |
 

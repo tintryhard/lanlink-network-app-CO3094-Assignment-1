@@ -35,5 +35,7 @@
   - plaintext binds only to loopback; any other address needs `--cert/--key`;
   - passwords are stored as PBKDF2-HMAC-SHA256 hashes with a random salt (600,000 rounds);
   - unknown users are checked against a dummy hash, so a wrong name and a wrong password take the same time.
+- **Discovery is optional.** If the UDP port cannot be bound (busy, or reserved on Windows), the server prints `Discovery disabled: ...` and still serves TCP.
+- **Worker wake-up.** Each worker's `receive()` wakes at least every `WORKER_WAKEUP_S` (0.5 s) to expire transfers and to notice a shutdown.
 - **Shutdown** stops accepting, closes the UDP socket and calls `socket.shutdown()` on every client, which wakes blocked `recv()` calls. It then joins all worker threads.
 - **Public chat** is written to each recipient in turn on the sender's thread, so one slow recipient delays the `CHAT_ACK`.
