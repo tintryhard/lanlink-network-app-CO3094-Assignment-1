@@ -1,12 +1,14 @@
 <h1>1 System Architecture</h1>
 <p>LanLink is a chat and file-transfer application for a local network, made of a server
-and a command-line client. One server runs on one host of the LAN. Each client keeps
+and clients with a command-line interface or an optional Tkinter GUI. One server runs
+on one host of the LAN. Each client keeps
 one TCP connection to it for the whole session, protected by TLS on the LAN. The server
 relays all traffic; clients never connect to each other.</p>
 <h2>1.1 Components and data paths</h2>
 <p>Figure 1 shows the server&#39;s accept loop, connection workers and shared registries,
-together with three clients and the UDP discovery path.</p>
-<p><img src="../diagrams/architecture.svg" alt="Figure 1. LanLink runtime architecture: server threads, shared registries and clients. Thick links are TCP connections (TLS is required except on loopback); the dotted link is UDP discovery."></p>
+together with CLI and GUI clients and the UDP discovery path. Both interfaces reuse
+the same connection, authentication and transfer code.</p>
+<p><img src="../diagrams/lucid/architecture.png" alt="Figure 1. LanLink runtime architecture: server threads, shared registries, and CLI and GUI clients. Thick links are TCP connections (TLS is required except on loopback); the dotted link is UDP discovery."></p>
 <p>The server&#39;s main thread accepts TCP connections and starts one worker for each
 accepted socket. That worker performs the TLS handshake and the <code>HELLO</code> exchange,
 then handles authentication and later requests in its message loop. Running the
@@ -18,10 +20,11 @@ and writes to that recipient&#39;s socket through the connection transport.</p>
 <p>A separate discovery thread answers UDP <code>DISCOVER</code> requests with <code>SERVER_INFO</code>.
 Discovery is optional: if the UDP port is unavailable because of a permission error
 or an address conflict, the server prints a warning and continues serving TCP clients.</p>
-<p>The client has three persistent threads: the main thread handles commands and file
-events, the input thread reads typed commands, and the reader thread receives socket
-messages. Each accepted outgoing transfer starts a temporary sender thread. Table 2
-in Section 1.3.1 gives their roles and responsibilities.</p>
+<p>The CLI has three persistent threads: main, input and socket reader. The GUI has two:
+the Tk main thread and socket reader. Its reader callbacks enqueue chat, file and
+progress events; only the Tk thread updates widgets, polling that queue with a 100 ms
+timer. Each accepted outgoing transfer starts a temporary sender thread. Table 2 in
+Section 1.3.1 gives their roles and responsibilities.</p>
 <h2>1.2 Layer separation</h2>
 <p>Layered organisation separates networking responsibilities <a href="#ref1">[1]</a>.
 Table 1 groups the modules into user-interface, network and data-processing layers.</p>
@@ -35,7 +38,7 @@ Table 1 groups the modules into user-interface, network and data-processing laye
 </thead>
 <tbody><tr>
 <td>User interface</td>
-<td><code>client/__main__.py</code>, <code>client/display.py</code></td>
+<td><code>client/__main__.py</code>, <code>client/display.py</code>, <code>client/gui.py</code></td>
 </tr>
 <tr>
 <td>Network</td>
@@ -61,7 +64,8 @@ its connection.</p>
 <h3>1.3.1 Threads</h3>
 <p>Table 2 lists the threads used by the server and client. With N connection workers and
 discovery enabled, the server runs N + 2 threads. A logged-in CLI runs three persistent
-threads, plus one sender thread for each outgoing transfer that is sending.</p>
+threads; the logged-in GUI runs two. Both add one sender thread per outgoing transfer
+that is sending.</p>
 <p>Table 2. Threads on the server and the client.</p>
 <table>
 <thead>
@@ -87,18 +91,18 @@ threads, plus one sender thread for each outgoing transfer that is sending.</p>
 <td>1 per connection, at most <code>--max-clients</code> (default 64)</td>
 </tr>
 <tr>
-<td>Client main thread (login run)</td>
-<td>Command loop: takes one item at a time from the command/event queue (typed line, file event, final transfer snapshot); sends requests and waits for their replies</td>
+<td>Client main thread</td>
+<td>CLI: consumes typed commands and file events. GUI: runs Tk, renders queued events and handles dialogs. Both send requests synchronously and wait for replies</td>
 <td>1</td>
 </tr>
 <tr>
-<td>Client input thread</td>
+<td>Client input thread (CLI only)</td>
 <td>Reads one stdin line per prompt and queues it; end of input becomes <code>/logout</code>; daemon</td>
-<td>1</td>
+<td>1 in CLI; none in GUI</td>
 </tr>
 <tr>
 <td>Client reader thread</td>
-<td>Only reader of the socket: prints chats, hands replies to waiting requests by <code>ref_request_id</code>, feeds file messages to the engines and sends their replies (e.g. <code>FILE_RESULT</code>), queues file events; not a daemon, joined when the client closes</td>
+<td>Only socket reader: matches replies by <code>ref_request_id</code>, feeds file messages to engines and sends replies such as <code>FILE_RESULT</code>. CLI prints chats; GUI callbacks enqueue them. Not a daemon; joined on close</td>
 <td>1</td>
 </tr>
 <tr>
@@ -177,7 +181,8 @@ for discovery, allowing a client to broadcast before it knows the server&#39;s a
 <p>LAN connections use TLS 1.2 or newer through Python&#39;s standard <code>ssl</code> module
 <a href="#ref5">[5]</a>. The server
 loads its certificate and private key using <code>--cert</code> and <code>--key</code>. Clients load the
-server&#39;s self-signed certificate using <code>--cafile</code> and verify the server during the TLS
+server&#39;s self-signed certificate using <code>--cafile</code> in the CLI, or the GUI&#39;s certificate
+field with <strong>Use TLS</strong> selected, and verify the server during the TLS
 handshake. Hostname checking is disabled because the server&#39;s LAN address may change.
 Without TLS, both programs restrict connections to loopback addresses.</p>
 <p>TLS protects the full TCP stream, including login passwords, message headers and file
@@ -193,12 +198,19 @@ using a dummy record. Three failed login attempts close the connection.</p>
 and connection-monitoring features have the following limits.</p>
 <ul>
 <li><strong>Presence and user list.</strong> UDP discovery finds servers. Clients do not broadcast
-their presence, and the user list is requested after login and through <code>/users</code>.
-Changes in online users are not pushed to other clients.</li>
+their presence. The CLI requests the user list after login and through <code>/users</code>;
+the GUI requests it after login and schedules another refresh 3 s after each
+successful refresh. Changes are not pushed by the server. These GUI requests
+also keep its connection active while the user is not typing; they are not a
+<code>PING</code>/<code>PONG</code> heartbeat.</li>
 <li><strong>Heartbeat.</strong> <code>PING</code> and <code>PONG</code> are defined in the codec but have no server handler.
 After login, sending <code>PING</code> produces an <code>ERROR</code> with code <code>INVALID_FIELD</code>, followed
 by disconnection. Connection cleanup relies on idle timeouts and I/O failures. The
 advertised heartbeat and idle values in <code>HELLO_ACK</code> are not applied by the client;
 Section 2.6.1 details the advertised and configured timeout values.</li>
+<li><strong>GUI responsiveness and input.</strong> Tk widgets are updated only on the main thread,
+but discovery, connection, chat requests and file inspection also run there and can
+delay redraws. The 100 ms event timer is not a latency guarantee. On Linux the GUI
+disables X input methods, so accented text must be pasted when it needs an IME.</li>
 </ul>
 

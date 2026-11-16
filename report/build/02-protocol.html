@@ -315,7 +315,7 @@ payload : 48 69 20 42 69 6e 68 21  -&gt; &quot;Hi Binh!&quot; (8 bytes, UTF-8)
 <td>none</td>
 </tr>
 </tbody></table>
-<p><code>message</code> is user-facing text (Vietnamese, except one English text in the HELLO phase). <code>ref_request_id</code> is present when the error answers a request. It is absent from the HELLO-phase error and from transfer notices (<code>TIMEOUT</code>, <code>CONNECTION_LOST</code>), including the one the recipient gets when its <code>FILE_REJECT</code> cannot be forwarded. The server never sets <code>field</code>.</p>
+<p><code>message</code> is short English user-facing text, including the HELLO-phase error. Stable error codes, rather than the wording, identify failures. <code>ref_request_id</code> is present when the error answers a request. It is absent from the HELLO-phase error and from transfer notices (<code>TIMEOUT</code>, <code>CONNECTION_LOST</code>), including the one the recipient gets when its <code>FILE_REJECT</code> cannot be forwarded. The server never sets <code>field</code>.</p>
 <h2>2.5 Error codes</h2>
 <p>There are 35 error codes. A code reaches the peer in an <code>ERROR</code>, as the <code>error_code</code> of a <code>FILE_RESULT</code>, or as the <code>reason</code> of a <code>FILE_CANCEL</code>. Decoder errors close the connection without a reply (2.6.2), and some codes are local only.</p>
 <p>Table 10 lists all 35 error codes, where each can appear (<code>ERROR.code</code>, <code>FILE_RESULT.error_code</code>, <code>FILE_CANCEL.reason</code>, a closed connection, or a local outcome only) and when it is produced.</p>
@@ -416,7 +416,7 @@ payload : 48 69 20 42 69 6e 68 21  -&gt; &quot;Hi Binh!&quot; (8 bytes, UTF-8)
 <tr>
 <td><code>QUEUE_FULL</code></td>
 <td><code>ERROR</code>; local</td>
-<td><code>ERROR</code>: the connection has already used 64 transfer IDs. Local: the client already has 64 requests waiting for replies; or the client&#39;s file-event queue is full, which closes the client&#39;s connection. That queue defaults to 128 entries, but the CLI passes its own unbounded queue, so this case cannot occur in the CLI</td>
+<td><code>ERROR</code>: the connection has already used 64 transfer IDs. Local: the client already has 64 requests waiting for replies; or the client&#39;s file-event queue is full, which closes its connection. The library queue defaults to 128 entries, but both CLI and GUI pass their own unbounded queues, so queue overflow does not occur in those interfaces</td>
 </tr>
 <tr>
 <td><code>TIMEOUT</code></td>
@@ -617,8 +617,8 @@ max_user_list_bytes   max_datagram_bytes    heartbeat_interval_s   idle_timeout_
 <td>advertised only; nothing uses it</td>
 </tr>
 <tr>
-<td>Client request (client <code>--timeout</code>)</td>
-<td>5.0 s</td>
+<td>Client request</td>
+<td>5.0 s (CLI <code>--timeout</code> default; fixed GUI value)</td>
 <td>waits for the matching reply; on expiry the client closes the session</td>
 </tr>
 <tr>
@@ -629,7 +629,7 @@ max_user_list_bytes   max_datagram_bytes    heartbeat_interval_s   idle_timeout_
 <tr>
 <td>Transfer engine timeouts</td>
 <td>sender 60 s (<code>OFFERED</code>) / 30 s (later); receiver 30 s</td>
-<td>available in the transfer engine but not activated by the CLI</td>
+<td>available in the transfer engine but not activated by either CLI or GUI</td>
 </tr>
 </tbody></table>
 <p>The advertised idle timeout differs from the real one: <code>HELLO_ACK</code> always advertises 45 s (the built-in server default), while the command-line server uses 120 s. The client checks that <code>limits</code> is valid (an invalid object fails the handshake) but never applies the values, so the wrong number has no effect at run time.</p>
@@ -667,5 +667,12 @@ max_user_list_bytes   max_datagram_bytes    heartbeat_interval_s   idle_timeout_
 <h2>2.8 UDP discovery</h2>
 <p>A client finds a server on the LAN by UDP broadcast. Each datagram holds exactly one frame in the format of Figure 2, with no payload and no trailing bytes, and is at most 1 024 B long; an invalid datagram is ignored.</p>
 <p>The server binds its UDP socket to the same address and port as its TCP listener (default port 5000; with the default host <code>127.0.0.1</code> this is loopback). If the bind fails, the server runs without discovery. The client broadcasts one <code>DISCOVER</code> to <code>255.255.255.255</code> on that port and collects replies for 2 s. The server answers with a unicast <code>SERVER_INFO</code> to the source address and port of the request, carrying <code>ref_request_id</code>, <code>server_name</code>, the TCP <code>port</code> and the <code>tls</code> flag.</p>
-<p>The client keeps the replies that match its <code>request_id</code>, takes each server&#39;s IP from the source address, prints the list and exits. The user then connects with that host and port; TLS is chosen from the client&#39;s own options, not from <code>tls</code>. Discovery is plaintext and finds servers, not users (see 1.5); a client learns who is online through <code>USER_LIST</code> (Table 5).</p>
+<p>The discovery helper keeps replies matching its <code>request_id</code> and takes each server&#39;s
+IP from the source address. The CLI&#39;s <code>--discover</code> prints the list and exits; the user
+then supplies the host, port and TLS options when connecting. The GUI&#39;s <strong>Scan LAN</strong>
+instead chooses the first reply, fills its host and port fields, and sets <strong>Use TLS</strong>
+from the reply&#39;s <code>tls</code> flag. The login window stays open. The user must still supply
+the trusted certificate for TLS; an advertised flag is not certificate verification.
+Discovery is plaintext and finds servers, not users (see 1.5); <code>USER_LIST</code> supplies
+online users (Table 5).</p>
 

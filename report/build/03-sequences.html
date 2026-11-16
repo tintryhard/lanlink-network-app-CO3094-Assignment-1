@@ -1,9 +1,11 @@
 <h1>3 Sequence Diagrams</h1>
 <p>This section follows a chat message and a file transfer through the system. In Figures 5
-to 9 one lifeline is one thread, not one host: the server has a main thread that accepts
-connections and one worker thread per client, and each client has a main thread, a keyboard
-thread, a reader thread and, while it sends a file, a file-sender thread (Table 2,
-Section 1.3.1). The server has no central router thread. The worker of the connection that
+to 9 one lifeline is one thread, not one host. The interface annotations show the CLI:
+each CLI client has main, keyboard and reader threads, plus a temporary file sender
+(Table 2, Section 1.3.1). The GUI uses the same network messages, with Tk callbacks
+instead of typed commands and queued rendering instead of reader-thread printing.
+The server has one main accept thread and one worker per client, with no central router
+thread. The worker of the connection that
 <em>sent</em> a message writes the forwarded copy straight into the recipient&#39;s socket; a write
 lock per socket keeps this frame from interleaving with the recipient worker&#39;s own replies.
 Error codes are listed in Table 10 (Section 2.5), limits and timeouts in Table 11
@@ -25,10 +27,13 @@ user with IP address and port.</li>
 <p>The TLS handshake and <code>HELLO</code> each get 5 s; on expiry the server closes the socket without an
 <code>ERROR</code>. A bad password gets an <code>ERROR</code> with <code>AUTH_FAILED</code>, and a name already online gets
 <code>ALREADY_LOGGED_IN</code>. The CLI then exits; the server itself closes a connection after
-three failed logins.</p>
-<p><img src="../diagrams/seq-login.svg" alt="Figure 5. Login: TCP and TLS connect, HELLO, AUTH and the first USER_LIST."></p>
+three failed logins on one connection. The GUI instead shows an English error in the
+login window, closes that failed connection and allows another login attempt.</p>
+<p><img src="../diagrams/seq-login.svg" alt="Figure 5. CLI login: TCP and TLS connect, HELLO, AUTH and the first USER_LIST. The GUI uses the same network exchange."></p>
 <h2>3.2 Chat message lifecycle</h2>
-<p>Figure 6 follows one private message from Alice to Bob.</p>
+<p>Figure 6 follows one private message from Alice to Bob using the CLI. In the GUI,
+Alice selects Bob&#39;s conversation and presses Enter; Bob&#39;s reader queues the message
+and the Tk thread renders it in that conversation, or increments its unread count.</p>
 <ol>
 <li>Alice types <code>/msg bob hi</code>; her client sends <code>CHAT_PRIVATE</code> with a fresh <code>request_id</code>
 and <code>recipient = bob</code>, and waits for the reply.</li>
@@ -44,15 +49,18 @@ request ID in <code>ref_request_id</code> and the server&#39;s message ID and ti
 </ol>
 <p><code>CHAT_ACK</code> means &quot;written to Bob&#39;s connection&quot;, not &quot;read by Bob&quot;. If Bob has no session,
 Alice gets <code>ERROR RECIPIENT_OFFLINE</code>. If the write to Bob fails, his stream may hold a partial
-frame, so the server shuts his socket down (his worker exits within 0.5 s) and answers Alice
+frame, so the server shuts his socket down (the worker checks state at read-polling
+intervals of at most 0.5 s, not a guaranteed exit time) and answers Alice
 with <code>ERROR CONNECTION_LOST</code>, as it also does when Bob&#39;s <code>AUTH_OK</code> is not out within 1 s.</p>
-<p><img src="../diagrams/seq-chat.svg" alt="Figure 6. Lifecycle of a private chat message, with the offline and failed-write alternatives."></p>
+<p><img src="../diagrams/seq-chat.svg" alt="Figure 6. CLI private-chat lifecycle, with the offline and failed-write alternatives. Network routing also applies to the GUI."></p>
 <p>A public message (<code>/all hi</code>, type <code>CHAT_PUBLIC</code>, no recipient field) is handled differently,
 as the note at the bottom of Figure 6 shows. Alice&#39;s worker delivers it to each other online
 user one by one, closing and skipping any recipient whose write fails. It then always sends
 <code>CHAT_ACK</code>, even with no recipients, so this ack only means &quot;accepted&quot; (best effort).</p>
 <h2>3.3 File transfer: happy path</h2>
-<p>Figure 7 shows a successful transfer: negotiation, chunk stream, verification.</p>
+<p>Figure 7 shows a successful CLI transfer: negotiation, chunk stream, verification.
+In the GUI, the <strong>+</strong> button and file picker replace <code>/offer</code>; an Accept/Reject dialog
+replaces <code>/accept</code> or <code>/reject</code>. Both call the same <code>PrivateChatClient</code> methods.</p>
 <ol>
 <li>Alice types <code>/offer bob a.pdf</code>; her client reads the file once for its size and SHA-256
 and sends <code>FILE_OFFER</code> with these values, the file name and the chunk size.</li>
@@ -78,13 +86,13 @@ control paces the sender: if Bob reads slowly, the write to his socket blocks Al
 which stops reading from Alice, whose sender thread then blocks on its own write. Thanks to
 the <code>.part</code> file and the final rename, an incomplete or corrupt download never appears under
 the real name.</p>
-<p><img src="../diagrams/seq-file.svg" alt="Figure 7. File transfer, happy path: offer, accept, chunk loop, FILE_END, verification and FILE_RESULT."></p>
+<p><img src="../diagrams/seq-file.svg" alt="Figure 7. CLI file transfer: offer, accept, chunk loop, FILE_END, verification and FILE_RESULT. The GUI reuses this transfer path."></p>
 <h2>3.4 File transfer: failure paths</h2>
 <p>Figure 8 shows the two deliberate stops.</p>
 <ul>
 <li><strong>Reject.</strong> Bob&#39;s <code>FILE_REJECT</code> is forwarded to Alice, the session ends <code>REJECTED</code>, and no
 file is opened and no sender thread started.</li>
-<li><strong>Cancel.</strong> The CLI has no cancel command: <code>FILE_CANCEL</code> is sent only when reading the
+<li><strong>Cancel.</strong> Neither interface exposes a cancel control: <code>FILE_CANCEL</code> is sent only when reading the
 source fails mid-transfer (e.g. <code>SOURCE_CHANGED</code>), and Bob&#39;s client then deletes its
 <code>.part</code> file and ends <code>CANCELLED</code>.</li>
 </ul>
@@ -106,6 +114,7 @@ causes, repeats that value in <code>ref_request_id</code>. After login the clien
 slot per request and the reader thread fills the slot that matches each reply, so
 concurrent requests never get each other&#39;s answers. An unmatched reply, or no reply within
 5 s, closes the connection, and at most 64 requests can wait at once. Chat, file messages
-and errors that name a transfer are not replies and go straight to the screen or the
-transfer code.</p>
+and errors that name a transfer are not replies. The reader dispatches them to the
+transfer code or interface callback: the CLI prints chat directly, while the GUI
+queues chat and file/progress events for the Tk thread.</p>
 

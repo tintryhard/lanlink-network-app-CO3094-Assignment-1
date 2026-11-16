@@ -15,7 +15,7 @@
       "h": 468
      },
      "containerTitle": {
-      "text": "Client A (python -m client --username …)"
+      "text": "Client A (CLI: python -m client)"
      },
      "style": {
       "fill": {
@@ -39,7 +39,7 @@
       "h": 326
      },
      "containerTitle": {
-      "text": "Client B (same threads)"
+      "text": "Client B (GUI: python -m client.gui)"
      },
      "style": {
       "fill": {
@@ -223,9 +223,9 @@
       "x": 40,
       "y": 638,
       "w": 250,
-      "h": 44
+      "h": 64
      },
-     "text": "<span style=\"font-size:20px\">lanlink-cli-input</span>",
+     "text": "<span style=\"font-size:20px\"><b>events: queue.Queue</b><br>chat / files / progress</span>",
      "style": {
       "fill": {
        "type": "color",
@@ -244,11 +244,11 @@
      "type": "rectangle",
      "boundingBox": {
       "x": 40,
-      "y": 712,
+      "y": 750,
       "w": 250,
-      "h": 44
+      "h": 64
      },
-     "text": "<span style=\"font-size:20px\">main thread</span>",
+     "text": "<span style=\"font-size:20px\"><b>Tk main thread</b><br>widgets / dialogs</span>",
      "style": {
       "fill": {
        "type": "color",
@@ -266,12 +266,12 @@
      "id": "b_rd",
      "type": "rectangle",
      "boundingBox": {
-      "x": 40,
-      "y": 786,
-      "w": 250,
-      "h": 44
+      "x": 350,
+      "y": 638,
+      "w": 230,
+      "h": 64
      },
-     "text": "<span style=\"font-size:20px\">lanlink-client-reader</span>",
+     "text": "<span style=\"font-size:20px\"><b>reader thread</b><br>events.put()</span>",
      "style": {
       "fill": {
        "type": "color",
@@ -290,11 +290,11 @@
      "type": "rectangle",
      "boundingBox": {
       "x": 40,
-      "y": 860,
+      "y": 840,
       "w": 250,
-      "h": 44
+      "h": 64
      },
-     "text": "<span style=\"font-size:20px\">lanlink-file-sender</span>",
+     "text": "<span style=\"font-size:20px\"><b>file sender (temporary)</b><br>sends; queues progress</span>",
      "style": {
       "fill": {
        "type": "color",
@@ -313,9 +313,9 @@
      "type": "rectangle",
      "boundingBox": {
       "x": 390,
-      "y": 712,
+      "y": 750,
       "w": 190,
-      "h": 192
+      "h": 154
      },
      "text": "<span style=\"font-size:20px\"><b>socket +<br>SocketTransport</b><br>_write_lock</span>",
      "style": {
@@ -340,7 +340,7 @@
       "w": 250,
       "h": 64
      },
-     "text": "<span style=\"font-size:20px\"><b>Client C</b><br>(same threads)</span>",
+     "text": "<span style=\"font-size:20px\"><b>Client C</b><br>(CLI or GUI)</span>",
      "style": {
       "fill": {
        "type": "color",
@@ -712,7 +712,14 @@
       "color": "#333333",
       "width": 2,
       "style": "solid"
-     }
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\">poll every 100 ms</span>",
+       "position": 0.5,
+       "side": "middle"
+      }
+     ]
     },
     {
      "id": "b2",
@@ -722,17 +729,17 @@
       "style": "none",
       "shapeId": "b_rd",
       "position": {
-       "x": 0.5,
-       "y": 0
+       "x": 0,
+       "y": 0.5
       }
      },
      "endpoint2": {
       "type": "shapeEndpoint",
       "style": "arrow",
-      "shapeId": "b_main",
+      "shapeId": "b_in",
       "position": {
-       "x": 0.5,
-       "y": 1
+       "x": 1,
+       "y": 0.5
       }
      },
      "stroke": {
@@ -759,14 +766,21 @@
       "shapeId": "b_sock",
       "position": {
        "x": 0,
-       "y": 0.115
+       "y": 0.2077922077922078
       }
      },
      "stroke": {
       "color": "#333333",
       "width": 2,
       "style": "solid"
-     }
+     },
+     "text": [
+      {
+       "text": "<span style=\"font-size:18px\">send()</span>",
+       "position": 0.5,
+       "side": "top"
+      }
+     ]
     },
     {
      "id": "b4",
@@ -776,8 +790,8 @@
       "style": "none",
       "shapeId": "b_rd",
       "position": {
-       "x": 1,
-       "y": 0.5
+       "x": 0.5,
+       "y": 1
       }
      },
      "endpoint2": {
@@ -785,8 +799,8 @@
       "style": "arrow",
       "shapeId": "b_sock",
       "position": {
-       "x": 0,
-       "y": 0.5
+       "x": 0.39473684210526316,
+       "y": 0
       }
      },
      "stroke": {
@@ -813,7 +827,7 @@
       "shapeId": "b_sock",
       "position": {
        "x": 0,
-       "y": 0.885
+       "y": 0.7922077922077922
       }
      },
      "stroke": {
@@ -865,7 +879,7 @@
       "shapeId": "b_sock",
       "position": {
        "x": 1,
-       "y": 0.5
+       "y": 0.37662337662337664
       }
      },
      "endpoint2": {

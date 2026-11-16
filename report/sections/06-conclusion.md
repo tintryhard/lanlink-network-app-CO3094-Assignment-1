@@ -1,22 +1,20 @@
 # 6 Conclusion
 
-LanLink provides authenticated private and public chat, an online user list and file
-transfer through a central server. Clients keep a TCP connection for their session,
-use TLS when communicating across the LAN, and can find the server through optional
-UDP discovery. File transfers include recipient approval and checks of the received
-size and SHA-256 digest before completion is confirmed.
+LanLink provides authenticated private/public chat, an online user list and file
+transfer through a central server. CLI and optional Tkinter interfaces share its
+session and transfer engine. Clients keep a TCP connection, use TLS across the LAN
+and discover servers through UDP. File transfers require recipient approval and
+verify size and SHA-256 before confirming completion.
 
-Building the application showed how much coordination is needed above the transport
-layer. The application must define message boundaries, match replies to requests,
-protect shared state and handle interrupted connections without leaving unfinished
-transfers behind. Separating the interface, networking and transfer logic made these
-behaviours easier to test. The automated tests cover framing, concurrent connections,
-authentication, file integrity and failure handling, while the terminal demonstration
-shows private chat, public chat and a completed file transfer.
+The work showed the coordination required above the transport layer: message
+boundaries, request/reply matching, shared-state protection and cleanup after failure.
+Separating interface, networking and transfer logic made these behaviours easier to
+test. Automated tests cover framing, concurrency, authentication, integrity and failure
+handling; CLI and GUI demos show chat and completed transfers. GUI conversation
+history, unread counts and dialogs still lack automated widget coverage.
 
-The current version is intended for live communication between online users. Public
-messages are forwarded to recipients in sequence, discovery has no retry, and there
-is no heartbeat or storage for offline messages. Future work could improve connection
-monitoring, make discovery less sensitive to packet loss and reduce the effect of a
-slow recipient on public chat. These improvements would extend the existing design
-without changing the basic client-server model.
+The current version serves online users: public forwarding is sequential, discovery
+has no retry, and neither heartbeat nor offline message storage is implemented.
+Future work should improve connection monitoring, discovery reliability and
+slow-recipient isolation, and add GUI tests while moving blocking requests off the
+Tk thread. These changes retain the client-server model.

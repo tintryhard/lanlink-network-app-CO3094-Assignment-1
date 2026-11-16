@@ -136,7 +136,7 @@ Table 9. The error message.
 |---|---|---|---|---|
 | `ERROR` | S→C only | `code` (an error code, Table 10), `message` (≤256); opt. `ref_request_id`, opt. `field` (≤64), opt. `transfer_id` | none | none |
 
-`message` is user-facing text (Vietnamese, except one English text in the HELLO phase). `ref_request_id` is present when the error answers a request. It is absent from the HELLO-phase error and from transfer notices (`TIMEOUT`, `CONNECTION_LOST`), including the one the recipient gets when its `FILE_REJECT` cannot be forwarded. The server never sets `field`.
+`message` is short English user-facing text, including the HELLO-phase error. Stable error codes, rather than the wording, identify failures. `ref_request_id` is present when the error answers a request. It is absent from the HELLO-phase error and from transfer notices (`TIMEOUT`, `CONNECTION_LOST`), including the one the recipient gets when its `FILE_REJECT` cannot be forwarded. The server never sets `field`.
 
 ## 2.5 Error codes
 
@@ -165,7 +165,7 @@ Table 10. Error codes and where each appears on the wire.
 | `ALREADY_LOGGED_IN` | `ERROR` | `AUTH` on a connection that is already logged in, or for a username that has a session |
 | `RECIPIENT_OFFLINE` | `ERROR` | `CHAT_PRIVATE` or `FILE_OFFER` to a username with no active session, whether or not the account exists |
 | `RECIPIENT_UNKNOWN` | never raised | Defined, but no code path uses it |
-| `QUEUE_FULL` | `ERROR`; local | `ERROR`: the connection has already used 64 transfer IDs. Local: the client already has 64 requests waiting for replies; or the client's file-event queue is full, which closes the client's connection. That queue defaults to 128 entries, but the CLI passes its own unbounded queue, so this case cannot occur in the CLI |
+| `QUEUE_FULL` | `ERROR`; local | `ERROR`: the connection has already used 64 transfer IDs. Local: the client already has 64 requests waiting for replies; or the client's file-event queue is full, which closes its connection. The library queue defaults to 128 entries, but both CLI and GUI pass their own unbounded queues, so queue overflow does not occur in those interfaces |
 | `TIMEOUT` | `ERROR` | A transfer phase exceeded `--transfer-timeout`; sent with `transfer_id` to both parties |
 | `CONNECTION_LOST` | `ERROR`; local | `ERROR` reply to `CHAT_PRIVATE` when the write to the recipient failed, and to `CHAT_PRIVATE`/`FILE_OFFER` when the recipient's `AUTH_OK` was not sent within 1 s. `ERROR` notice with `transfer_id` and no `ref_request_id`, sent to both parties, when the other party of a transfer disconnected or a transfer message (including the `FILE_OFFER` itself) could not be forwarded. The exception is a `FILE_RESULT` or `FILE_CANCEL` that ends the transfer: if it cannot be forwarded, it is dropped without a notice. If a `FILE_REJECT` could not be forwarded, the notice goes to the recipient only. Local: the client lost the server |
 | `FILE_TOO_LARGE` | connection closed; local | Decoder: a size field above 100 MiB. Local: source-file inspection refuses to offer the file |
@@ -222,9 +222,9 @@ Table 11. Size limits and timeouts.
 | Worker wake-up | 0.5 s | longest single wait in `recv()`; worker re-checks transfer deadlines and `CLOSING` |
 | Wait for recipient's `AUTH_OK` | 1.0 s | `ERROR CONNECTION_LOST` |
 | Heartbeat interval | 15 s | advertised only; nothing uses it |
-| Client request (client `--timeout`) | 5.0 s | waits for the matching reply; on expiry the client closes the session |
+| Client request | 5.0 s (CLI `--timeout` default; fixed GUI value) | waits for the matching reply; on expiry the client closes the session |
 | Discovery wait | 2.0 s | collects `SERVER_INFO` replies until then |
-| Transfer engine timeouts | sender 60 s (`OFFERED`) / 30 s (later); receiver 30 s | available in the transfer engine but not activated by the CLI |
+| Transfer engine timeouts | sender 60 s (`OFFERED`) / 30 s (later); receiver 30 s | available in the transfer engine but not activated by either CLI or GUI |
 
 The advertised idle timeout differs from the real one: `HELLO_ACK` always advertises 45 s (the built-in server default), while the command-line server uses 120 s. The client checks that `limits` is valid (an invalid object fails the handshake) but never applies the values, so the wrong number has no effect at run time.
 
@@ -278,4 +278,11 @@ A client finds a server on the LAN by UDP broadcast. Each datagram holds exactly
 
 The server binds its UDP socket to the same address and port as its TCP listener (default port 5000; with the default host `127.0.0.1` this is loopback). If the bind fails, the server runs without discovery. The client broadcasts one `DISCOVER` to `255.255.255.255` on that port and collects replies for 2 s. The server answers with a unicast `SERVER_INFO` to the source address and port of the request, carrying `ref_request_id`, `server_name`, the TCP `port` and the `tls` flag.
 
-The client keeps the replies that match its `request_id`, takes each server's IP from the source address, prints the list and exits. The user then connects with that host and port; TLS is chosen from the client's own options, not from `tls`. Discovery is plaintext and finds servers, not users (see 1.5); a client learns who is online through `USER_LIST` (Table 5).
+The discovery helper keeps replies matching its `request_id` and takes each server's
+IP from the source address. The CLI's `--discover` prints the list and exits; the user
+then supplies the host, port and TLS options when connecting. The GUI's **Scan LAN**
+instead chooses the first reply, fills its host and port fields, and sets **Use TLS**
+from the reply's `tls` flag. The login window stays open. The user must still supply
+the trusted certificate for TLS; an advertised flag is not certificate verification.
+Discovery is plaintext and finds servers, not users (see 1.5); `USER_LIST` supplies
+online users (Table 5).
