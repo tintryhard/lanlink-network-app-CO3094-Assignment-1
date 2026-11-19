@@ -1,0 +1,10 @@
+.git
+.venv
+venv
+**/__pycache__
+certs
+data
+downloads
+report
+tests
+demo

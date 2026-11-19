@@ -1,0 +1,56 @@
+# LanLink on a private Docker network: one server container plus CLI client containers.
+#   docker compose up -d --build server
+#   docker compose run --rm client python -m client --host 172.30.0.10 --port 5000 --username alice --cafile server.crt
+#   docker compose run --rm --name alice-gui gui      (GUI, needs an X server on the host)
+name: lanlink
+
+services:
+  server:
+    build: .
+    image: lanlink
+    command: >
+      python -m server --host 0.0.0.0 --port 5000 --users data/users.json
+      --cert certs/server.crt --key certs/server.key --idle-timeout 600
+    volumes:
+      - ./certs:/app/certs:ro
+      - ./data:/app/data:ro
+    ports:
+      - "5000:5000/tcp"   # laptop GUI and phone connect through the laptop's IP
+      - "5000:5000/udp"
+    networks:
+      lan:
+        ipv4_address: 172.30.0.10
+
+  client:
+    image: lanlink
+    profiles: ["client"]   # only started with "docker compose run"
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./certs/server.crt:/app/server.crt:ro   # the certificate only, never the key
+      - ./demo:/app/demo:ro                     # files to offer: /offer bob demo/anh.jpg
+      - ./downloads:/app/downloads              # accepted files appear here on the laptop
+    networks:
+      - lan
+
+  gui:
+    build:
+      context: .
+      dockerfile: Dockerfile.gui
+    image: lanlink-gui
+    profiles: ["gui"]      # docker compose run --rm --name alice-gui gui
+    environment:
+      # Windows + VcXsrv/X410 by default; override for WSLg or Linux (see the guide)
+      DISPLAY: ${GUI_DISPLAY:-host.docker.internal:0.0}
+    volumes:
+      - ./certs/server.crt:/app/server.crt:ro   # type /app/server.crt in the Certificate field
+      - ./demo:/app/demo:ro
+      - ./downloads:/app/downloads
+    networks:
+      - lan
+
+networks:
+  lan:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

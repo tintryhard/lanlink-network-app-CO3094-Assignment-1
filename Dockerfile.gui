@@ -1,0 +1,12 @@
+# LanLink Tkinter GUI in a container; the window is drawn by an X server on the host.
+FROM ubuntu:24.04
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-tk fonts-dejavu-core \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1
+COPY common ./common
+COPY server ./server
+COPY client ./client
+COPY transfer ./transfer
+CMD ["python3", "-m", "client.gui"]
